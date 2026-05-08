@@ -1,0 +1,34 @@
+# ── Dart / Flutter 工具链生成文件 ──────────────────────────────────────────────
+# 这些文件由 flutter pub get / dart pub get 或 IDE 自动生成，
+# 不应纳入版本控制，每位开发者在 clone 后运行 pub get 即可重新生成。
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# 构建产物
+build/
+doc/api/
+
+# ── 开发者工具偏好 ────────────────────────────────────────────────────────────
+# devtools_options.yaml 是 Flutter DevTools 的本地配置，属于开发者个人偏好。
+devtools_options.yaml
+
+# ── 库包的依赖锁定文件 ────────────────────────────────────────────────────────
+# Dart/Flutter 包的约定：
+#   - 库包（package）不提交 pubspec.lock，允许 pub solver 根据约束灵活解析。
+#   - 应用（application）提交 pubspec.lock 以保证可复现构建。
+# example/ 目录是独立的应用工程，其 pubspec.lock 单独保留。
+pubspec.lock
+
+# ── IDE / 编辑器 ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# ── 操作系统 ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

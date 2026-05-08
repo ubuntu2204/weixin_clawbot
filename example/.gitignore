@@ -27,11 +27,16 @@ migrate_working_dir/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
 /build/
 /coverage/
+
+# Flutter 工具链生成的项目元数据（开发者本地文件）
+.metadata
+devtools_options.yaml
 
 # Symbolication related
 app.*.symbols
