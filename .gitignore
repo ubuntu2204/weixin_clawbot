@@ -20,7 +20,9 @@ devtools_options.yaml
 #   - 库包（package）不提交 pubspec.lock，允许 pub solver 根据约束灵活解析。
 #   - 应用（application）提交 pubspec.lock 以保证可复现构建。
 # example/ 目录是独立的应用工程，其 pubspec.lock 单独保留。
-pubspec.lock
+# 使用 /pubspec.lock（带前缀 /）确保只忽略根目录的 lock 文件，
+# 不影响 example/pubspec.lock。
+/pubspec.lock
 
 # ── IDE / 编辑器 ──────────────────────────────────────────────────────────────
 .idea/
