@@ -1,0 +1,23 @@
+name: weixin_clawbot_example
+description: Example app demonstrating the weixin_clawbot package.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  weixin_clawbot:
+    path: ../
+  # Used by bin/proxy_server.dart for Flutter Web CORS workaround
+  shelf: ^1.4.0
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

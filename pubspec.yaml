@@ -1,0 +1,26 @@
+name: weixin_clawbot
+description: >
+  A Flutter package for binding WeChat via QR code and receiving/sending messages
+  through the WeChat iLink Bot API (OpenClaw ClawBot).
+version: 0.1.0
+homepage: https://github.com/your-org/weixin_clawbot
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  shared_preferences: ^2.2.0
+  qr_flutter: ^4.1.0
+  uuid: ^4.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  # This package does not use Flutter's asset system directly.
