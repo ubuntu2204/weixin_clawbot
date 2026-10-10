@@ -131,7 +131,7 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     if (!result.ok) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('发送失败：${result.error}')),
+        SnackBar(content: SelectableText('发送失败：${result.error}')),
       );
     } else {
       _controller.clear();
@@ -431,10 +431,9 @@ class _ImageMessageViewState extends State<_ImageMessageView> {
                   ],
                 ),
                 Flexible(
-                  child: Text(
+                  child: SelectableText(
                     detail,
                     maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 10, color: Colors.grey),
                   ),
                 ),

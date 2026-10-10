@@ -452,7 +452,7 @@ class _QrError extends StatelessWidget {
         children: [
           const Icon(Icons.broken_image_outlined, size: 48, color: Colors.red),
           const SizedBox(height: 8),
-          Text(
+          SelectableText(
             'QR 码渲染失败\n$message',
             style: const TextStyle(color: Colors.red, fontSize: 12),
             textAlign: TextAlign.center,
@@ -484,7 +484,8 @@ class _StatusTile extends StatelessWidget {
         Icon(icon, color: color, size: 32),
         const SizedBox(width: 12),
         Flexible(
-          child: Text(
+          // SelectableText so error details (e.g. `出错了：...`) can be copied.
+          child: SelectableText(
             label,
             style:
                 Theme.of(context).textTheme.bodyMedium?.copyWith(color: color),
