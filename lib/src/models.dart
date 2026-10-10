@@ -315,10 +315,21 @@ class ImageItemData {
   /// - top-level `aeskey` is a 32-char hex string;
   /// - `media.aes_key` is base64 of either the raw 16 bytes (images) or of a
   ///   32-char hex string (files/voice/videos).
+  ///
+  /// An unusable top-level hex string (odd length, non-hex characters, or not
+  /// exactly 16 decoded bytes) falls back to [media.aesKey] instead of
+  /// failing the whole download — same observable behaviour as the official
+  /// plugin, where `Buffer.from(aeskey, 'hex')` yields an empty buffer and the
+  /// plain-download path is taken.
   Uint8List? resolveAesKeyBytes() {
     final hex = aesKeyHex;
     if (hex != null && hex.isNotEmpty) {
-      return hexToBytes(hex);
+      try {
+        final bytes = hexToBytes(hex);
+        if (bytes.length == 16) return bytes;
+      } on FormatException {
+        // fall through to media.aes_key
+      }
     }
     final base64Key = media?.aesKey;
     if (base64Key == null || base64Key.isEmpty) return null;

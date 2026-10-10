@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Flutter Web：CDN 请求经 `<proxyBaseUrl>/cdn` 转发，`proxy_server.dart` 已支持。
 - example：消息气泡直接渲染入站图片（下载解密 → `Image.memory`）。
 
+### Fixed
+
+- Flutter Web 接收图片失败（"图片下载失败"）：服务端常直接下发 `media.full_url`，
+  原实现会让浏览器直连 CDN（无 CORS 头，必被拦截）。现在 `full_url` 与自拼 URL
+  一样经本地代理转发——代理新增 `/cdnfull/<host>/<path>` 路由
+ （白名单 `weixin.qq.com` / `qq.com` 及子域）。
+- `image_item.aeskey` 非法（奇数长度/非 hex/非 16 字节）时回退 `media.aes_key`
+  或按明文下载，与官方 Node 侧宽松语义一致，不再让整次下载抛异常。
+- example 图片气泡显示具体错误详情并支持点击重试；无下载参数时显示 `[图片]`
+  占位而非发起注定失败的请求。
+
 ## [0.1.0] - 2026-05-08
 
 ### Added

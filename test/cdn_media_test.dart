@@ -83,6 +83,27 @@ void main() {
       expect(item.image!.isDownloadable, isTrue);
       expect(item.image!.resolveAesKeyBytes(), isNotNull);
     });
+
+    test('unusable top-level hex falls back to media.aes_key', () {
+      // Official parity: Buffer.from('not-hex!', 'hex') → empty buffer → the
+      // plugin falls back to media.aes_key instead of failing.
+      const item = ImageItemData(
+        aesKeyHex: 'not-hex!',
+        media: CdnMedia(aesKey: 'AAECAwQFBgcICQoLDA0ODw=='),
+      );
+      expect(item.resolveAesKeyBytes(),
+          equals(const [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
+    });
+
+    test('top-level hex that does not decode to 16 bytes falls back too', () {
+      const item = ImageItemData(
+        // 18 decoded bytes → unusable as an AES-128 key
+        aesKeyHex: '000102030405060708090a0b0c0d0e0f1011',
+        media: CdnMedia(
+            aesKey: 'MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY='),
+      );
+      expect(item.resolveAesKeyBytes(), isNotNull);
+    });
   });
 
   group('WeixinMessage.imageItem', () {
@@ -213,6 +234,86 @@ void main() {
         ),
         throwsA(isA<ILinkApiException>()),
       );
+    });
+
+    test('full_url is rewritten via fullUrlRewriter when provided', () async {
+      Uri? requestedUrl;
+      final client = MockClient((req) async {
+        requestedUrl = req.url;
+        return http.Response.bytes(Uint8List.fromList([1]), 200);
+      });
+
+      final downloader = CdnMediaDownloader(
+        httpClient: client,
+        fullUrlRewriter: (url) {
+          final u = Uri.parse(url);
+          return 'http://proxy:3001/cdnfull/${u.host}${u.path}'
+              '${u.hasQuery ? '?${u.query}' : ''}';
+        },
+      );
+
+      await downloader.downloadMedia(const CdnMedia(
+        encryptQueryParam: 'unused',
+        fullUrl: 'https://szextshort.weixin.qq.com/download?encrypted_query_param=q',
+      ));
+
+      expect(
+        requestedUrl.toString(),
+        'http://proxy:3001/cdnfull/szextshort.weixin.qq.com'
+        '/download?encrypted_query_param=q',
+      );
+    });
+  });
+
+  group('WeixinClawbot full_url proxy routing (Flutter Web)', () {
+    test('server-provided full_url goes through the proxy /cdnfull route',
+        () async {
+      Uri? requestedUrl;
+      final client = MockClient((req) async {
+        requestedUrl = req.url;
+        return http.Response.bytes(Uint8List.fromList([7, 8]), 200);
+      });
+
+      final clawbot = WeixinClawbot(
+        proxyBaseUrl: 'http://localhost:3001/',
+        httpClient: client,
+      );
+      addTearDown(clawbot.dispose);
+
+      await clawbot.downloadImage(const ImageItemData(
+        media: CdnMedia(
+          encryptQueryParam: 'p',
+          fullUrl:
+              'https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=abc',
+        ),
+      ));
+
+      expect(
+        requestedUrl.toString(),
+        'http://localhost:3001/cdnfull/novac2c.cdn.weixin.qq.com'
+        '/c2c/download?encrypted_query_param=abc',
+      );
+    });
+
+    test('without proxy the full_url is requested directly', () async {
+      Uri? requestedUrl;
+      final client = MockClient((req) async {
+        requestedUrl = req.url;
+        return http.Response.bytes(Uint8List.fromList([7, 8]), 200);
+      });
+
+      final clawbot = WeixinClawbot(httpClient: client);
+      addTearDown(clawbot.dispose);
+
+      await clawbot.downloadImage(const ImageItemData(
+        media: CdnMedia(
+          encryptQueryParam: 'p',
+          fullUrl: 'https://novac2c.cdn.weixin.qq.com/c2c/download?x=1',
+        ),
+      ));
+
+      expect(requestedUrl.toString(),
+          'https://novac2c.cdn.weixin.qq.com/c2c/download?x=1');
     });
   });
 }

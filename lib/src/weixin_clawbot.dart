@@ -42,9 +42,14 @@ class WeixinClawbot {
   final _pollers = <String, MessagePoller>{};
 
   /// Media downloader for inbound CDN-backed items (images/files/videos).
+  ///
+  /// On Flutter Web both the self-built CDN URL (`<proxy>/cdn`) and the
+  /// server-provided `full_url` (`<proxy>/cdnfull/<host>/...`) are routed
+  /// through the local CORS proxy.
   late final CdnMediaDownloader media = CdnMediaDownloader(
     cdnBaseUrl: _resolvedCdnBaseUrl,
     httpClient: _httpClient,
+    fullUrlRewriter: _hasProxy ? _rewriteFullUrlThroughProxy : null,
   );
 
   WeixinClawbot({
@@ -59,10 +64,22 @@ class WeixinClawbot {
   /// otherwise directly (or the custom [cdnBaseUrl]).
   String get _resolvedCdnBaseUrl {
     if (cdnBaseUrl != null && cdnBaseUrl!.isNotEmpty) return cdnBaseUrl!;
-    if (proxyBaseUrl != null && proxyBaseUrl!.isNotEmpty) {
+    if (_hasProxy) {
       return '${proxyBaseUrl!.replaceAll(RegExp(r'/+$'), '')}/cdn';
     }
     return defaultCdnBaseUrl;
+  }
+
+  bool get _hasProxy => proxyBaseUrl != null && proxyBaseUrl!.isNotEmpty;
+
+  /// Maps a server-provided absolute `full_url` onto the local proxy's
+  /// `/cdnfull/<host>/<path>?<query>` route so Flutter Web avoids the
+  /// browser's CORS / mixed-content blocks on the CDN host.
+  String _rewriteFullUrlThroughProxy(String rawUrl) {
+    final u = Uri.parse(rawUrl);
+    final base = proxyBaseUrl!.replaceAll(RegExp(r'/+$'), '');
+    final query = u.hasQuery ? '?${u.query}' : '';
+    return '$base/cdnfull/${u.host}${u.path}$query';
   }
 
   // ── Account management ───────────────────────────────────────────────────

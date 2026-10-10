@@ -367,16 +367,37 @@ class _ImageMessageView extends StatefulWidget {
 }
 
 class _ImageMessageViewState extends State<_ImageMessageView> {
-  late final Future<Uint8List> _future;
+  late Future<Uint8List> _future;
 
   @override
   void initState() {
     super.initState();
-    _future = widget.downloadImage(widget.image);
+    _future = _download();
+  }
+
+  Future<Uint8List> _download() async {
+    try {
+      return await widget.downloadImage(widget.image);
+    } catch (e) {
+      // Surface the real cause (CORS/proxy、HTTP 状态码、解密失败等) in the
+      // console — the bubble itself only shows a short headline.
+      debugPrint('图片下载失败: $e');
+      rethrow;
+    }
+  }
+
+  void _retry() {
+    setState(() => _future = _download());
   }
 
   @override
   Widget build(BuildContext context) {
+    // 没有可用的下载参数（无 encrypt_query_param / full_url）时不要发起
+    // 注定失败的请求，直接显示占位文本。
+    if (!widget.image.isDownloadable) {
+      return const Text('[图片]',
+          style: TextStyle(fontSize: 12, color: Colors.grey));
+    }
     return FutureBuilder<Uint8List>(
       future: _future,
       builder: (context, snapshot) {
@@ -388,18 +409,37 @@ class _ImageMessageViewState extends State<_ImageMessageView> {
           );
         }
         if (snapshot.hasError) {
-          return const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.broken_image_outlined, size: 18, color: Colors.grey),
-              SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  '图片下载失败',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
+          final detail = '${snapshot.error}';
+          return InkWell(
+            onTap: _retry,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.broken_image_outlined,
+                        size: 18, color: Colors.grey),
+                    SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '图片下载失败（点击重试）',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                Flexible(
+                  child: Text(
+                    detail,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                  ),
+                ),
+              ],
+            ),
           );
         }
         return ClipRRect(

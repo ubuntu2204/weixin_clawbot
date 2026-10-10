@@ -7,6 +7,9 @@
 ///    `{cdnBaseUrl}/download?encrypted_query_param=<param>`.
 /// 2. GET the payload (ciphertext when `aes_key` is set).
 /// 3. Decrypt with AES-128-ECB and strip PKCS7 padding.
+///
+/// On Flutter Web both URL forms are carried by the local CORS proxy: the
+/// self-built URL via `cdnBaseUrl` and `full_url` via [CdnMediaDownloader.fullUrlRewriter].
 library;
 
 import 'dart:async';
@@ -30,6 +33,16 @@ class CdnMediaDownloader {
   /// proxy (e.g. `http://localhost:3001/cdn`).
   final String cdnBaseUrl;
 
+  /// Rewriter applied to `media.full_url` before the request.
+  ///
+  /// The server usually sends a pre-built `full_url` pointing directly at the
+  /// CDN host. On Flutter Web a direct request to that host is blocked by the
+  /// browser (no CORS headers, possible mixed content), so the facade passes a
+  /// rewriter that maps the absolute URL onto the local proxy's
+  /// `/cdnfull/<host>/<path>?<query>` route. `null` (native) keeps the URL
+  /// as-is.
+  final String Function(String fullUrl)? fullUrlRewriter;
+
   final http.Client? _httpClient;
 
   /// Whether the HTTP client was created internally (and thus disposed here).
@@ -40,6 +53,7 @@ class CdnMediaDownloader {
 
   CdnMediaDownloader({
     String? cdnBaseUrl,
+    this.fullUrlRewriter,
     http.Client? httpClient,
     this.timeout = const Duration(seconds: 30),
   })  : cdnBaseUrl = (cdnBaseUrl ?? defaultCdnBaseUrl)
@@ -65,20 +79,29 @@ class CdnMediaDownloader {
     Uint8List? aesKeyBytes,
   }) async {
     final param = media.encryptQueryParam;
-    final url = media.fullUrl?.isNotEmpty == true && media.fullUrl != null
-        ? Uri.parse(media.fullUrl!)
-        : Uri.parse('$cdnBaseUrl/download'
-            '?encrypted_query_param=${Uri.encodeComponent(param ?? '')}');
+    final hasFullUrl = media.fullUrl?.isNotEmpty == true;
+    // `full_url` takes precedence over the self-built URL (official parity),
+    // but on Flutter Web it must be routed through the local CORS proxy.
+    var url = hasFullUrl && fullUrlRewriter != null
+        ? Uri.parse(fullUrlRewriter!(media.fullUrl!))
+        : hasFullUrl
+            ? Uri.parse(media.fullUrl!)
+            : Uri.parse('$cdnBaseUrl/download'
+                '?encrypted_query_param=${Uri.encodeComponent(param ?? '')}');
 
     final client = _httpClient ?? http.Client();
     final http.Response resp;
     try {
-      resp = await client
-          .get(url)
-          .timeout(timeout);
+      resp = await client.get(url).timeout(timeout);
     } on TimeoutException {
       throw ILinkApiException('CDN download timed out: ${url.host}',
           statusCode: null);
+    } on http.ClientException catch (e) {
+      // Browser fetch/XHR failures (CORS, mixed content, offline) surface here.
+      throw ILinkApiException(
+        'CDN network error (${url.host}): ${e.message}',
+        statusCode: null,
+      );
     }
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       throw ILinkApiException(

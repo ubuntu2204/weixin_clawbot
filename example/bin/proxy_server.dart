@@ -8,6 +8,9 @@
 /// Inbound media (images/files/videos) live on a second CDN host
 /// (`https://novac2c.cdn.weixin.qq.com/c2c`) which also lacks CORS headers;
 /// requests whose path starts with `/cdn/` are forwarded there.
+/// `/cdnfull/<host>/<path>` forwards to other WeChat media CDN hosts — used
+/// for the server-provided `media.full_url` download links; only
+/// `weixin.qq.com` / `qq.com` and their subdomains are allowed.
 /// `/redirect/<host>/<path>` forwards to another iLink host
 /// (`scaned_but_redirect` IDC redirects); only `ilinkai.weixin.qq.com`
 /// and its subdomains are allowed.
@@ -64,6 +67,9 @@ Future<void> main() async {
     // Route rules, checked in order:
     //   /redirect/<host>/<path> → https://<host>/<path>   (IDC redirects,
     //       restricted to ilinkai.weixin.qq.com and subdomains)
+    //   /cdnfull/<host>/<path>  → https://<host>/<path>   (media CDN hosts,
+    //       restricted to weixin.qq.com / qq.com and subdomains; carries the
+    //       server-provided media `full_url`)
     //   /cdn/<path>             → the media CDN             (inbound media)
     //   anything else           → the iLink API host
     final requestedPath = request.requestedUri.path;
@@ -73,6 +79,8 @@ Future<void> main() async {
 
     final redirectMatch =
         RegExp(r'^/redirect/([^/]+)(/.*)$').firstMatch(requestedPath);
+    final cdnFullMatch =
+        RegExp(r'^/cdnfull/([^/]+)(/.*)$').firstMatch(requestedPath);
     if (redirectMatch != null) {
       final host = redirectMatch.group(1)!;
       final allowed = host == 'ilinkai.weixin.qq.com' ||
@@ -85,6 +93,20 @@ Future<void> main() async {
       }
       targetHost = 'https://$host';
       targetPath = redirectMatch.group(2)!;
+    } else if (cdnFullMatch != null) {
+      final host = cdnFullMatch.group(1)!;
+      final allowed = host == 'weixin.qq.com' ||
+          host.endsWith('.weixin.qq.com') ||
+          host == 'qq.com' ||
+          host.endsWith('.qq.com');
+      if (!allowed) {
+        return Response.badRequest(
+          body: 'cdn host not allowed: $host',
+          headers: _corsHeaders,
+        );
+      }
+      targetHost = 'https://$host';
+      targetPath = cdnFullMatch.group(2)!;
     } else if (requestedPath.startsWith('/cdn/')) {
       targetHost = _cdnTargetBase;
       targetPath = requestedPath.substring('/cdn'.length);
