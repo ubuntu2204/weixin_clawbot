@@ -1,6 +1,13 @@
 # weixin_clawbot
 
+[![pub.dev](https://img.shields.io/pub/v/weixin_clawbot)](https://pub.dev/packages/weixin_clawbot)
+[![source](https://img.shields.io/badge/source-github-blue)](https://github.com/ubuntu2204/weixin_clawbot)
+[![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+
 一个 Flutter package，通过微信扫码绑定 ClawBot（基于 OpenClaw iLink Bot API），并在 Flutter 应用中接收/发送微信消息。
+
+> **源码仓库**：https://github.com/ubuntu2204/weixin_clawbot
+> 协议实现参考腾讯官方插件 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)（详见文末"参考与致谢"）。
 
 灵感来源：[@claw-lab/wxclawbot-cli](https://github.com/lroolle/wxclawbot-cli) 和 [openclaw-weixin-cli](https://github.com/pzx521521/openclaw-weixin-cli)。
 
@@ -24,7 +31,7 @@
 
 ```yaml
 dependencies:
-  weixin_clawbot: ^0.1.0
+  weixin_clawbot: ^0.2.0
 ```
 
 ### 2. 前置要求
@@ -81,7 +88,27 @@ if (account != null) {
 }
 ```
 
-### 5. 发送消息
+### 5. 接收图片
+
+图片消息会完整解析 `image_item`（CDN 下载参数 + AES 密钥）。下载并解密一张图片：
+
+```dart
+clawbot.connect(account).listen((msg) {
+  final image = msg.imageItem;
+  if (image != null) {
+    final bytes = await clawbot.downloadImage(image); // 已解密的原始图片字节
+    // 例如：Image.memory(bytes)
+  }
+});
+```
+
+> 实现与官方 openclaw-weixin 插件一致：优先使用 `media.full_url`，否则请求
+> `{cdn}/download?encrypted_query_param=...`（默认 CDN 为
+> `https://novac2c.cdn.weixin.qq.com/c2c`），再按 AES-128-ECB + PKCS7 解密。
+> `image_item.aeskey`（hex）与 `media.aes_key`（base64）两种密钥形态均支持。
+> Flutter Web 上 CDN 请求走 `<proxyBaseUrl>/cdn` 前缀，配套代理服务器已支持。
+
+### 6. 发送消息
 
 ```dart
 // 发给绑定时确定的微信用户（account.defaultTo）
@@ -222,6 +249,15 @@ Auth:     Authorization: Bearer <bot_token>
 ```
 
 ---
+
+## 参考与致谢
+
+本 package 的协议实现大量参考了腾讯官方的 OpenClaw 微信通道插件：
+
+- **[Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)**（npm: `@tencent-weixin/openclaw-weixin`）——官方 OpenClaw 微信 channel 插件。本项目遵循其消息收发协议（`getupdates` 长轮询、`sendmessage`、`context_token`）、CDN 媒体下载参数（`encrypt_query_param` / `full_url`）与 AES-128-ECB + PKCS7 媒体加解密逻辑，包括 `image_item.aeskey`（hex）与 `media.aes_key`（base64）两种密钥形态的处理。
+- **[@claw-lab/wxclawbot-cli](https://github.com/lroolle/wxclawbot-cli)** 与 **[openclaw-weixin-cli](https://github.com/pzx521521/openclaw-weixin-cli)**——第三方 CLI 实现，协议细节参考。
+
+感谢以上开源项目。
 
 ## 许可证
 

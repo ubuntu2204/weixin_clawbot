@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:weixin_clawbot/weixin_clawbot.dart';
@@ -220,7 +222,10 @@ class _HomePageState extends State<HomePage> {
               : ListView.builder(
                   padding: const EdgeInsets.all(8),
                   itemCount: _messages.length,
-                  itemBuilder: (_, i) => _MessageBubble(msg: _messages[i]),
+                  itemBuilder: (_, i) => _MessageBubble(
+                    msg: _messages[i],
+                    downloadImage: _clawbot.downloadImage,
+                  ),
                 ),
         ),
 
@@ -296,15 +301,24 @@ class _HomePageState extends State<HomePage> {
 class _MessageBubble extends StatelessWidget {
   final WeixinMessage msg;
 
-  const _MessageBubble({required this.msg});
+  /// Downloads & decrypts an inbound image item (provided by the app's
+  /// `WeixinClawbot` instance).
+  final Future<Uint8List> Function(ImageItemData) downloadImage;
+
+  const _MessageBubble({required this.msg, required this.downloadImage});
 
   @override
   Widget build(BuildContext context) {
     final isUser = msg.isFromUser;
-    final text = msg.textContent ?? '[非文本消息]';
     final time = DateTime.fromMillisecondsSinceEpoch(msg.createTimeMs);
     final timeStr =
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+    // Prefer the first image item; fall back to text (or a placeholder for
+    // other non-text types such as files/videos).
+    final image = msg.imageItem;
+    final text = msg.textContent ??
+        (image == null && msg.items.isNotEmpty ? '[非文本消息]' : '');
 
     return Align(
       alignment: isUser ? Alignment.centerLeft : Alignment.centerRight,
@@ -322,7 +336,12 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment:
               isUser ? CrossAxisAlignment.start : CrossAxisAlignment.end,
           children: [
-            Text(text),
+            if (image != null)
+              _ImageMessageView(image: image, downloadImage: downloadImage),
+            if (text.isNotEmpty) ...[
+              if (image != null) const SizedBox(height: 4),
+              Text(text),
+            ],
             const SizedBox(height: 2),
             Text(
               '$timeStr · ${msg.fromUserId.split('@').first}',
@@ -331,6 +350,69 @@ class _MessageBubble extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Renders an inbound picture: downloads + decrypts it once and keeps the
+/// result cached for the lifetime of this widget.
+class _ImageMessageView extends StatefulWidget {
+  final ImageItemData image;
+  final Future<Uint8List> Function(ImageItemData) downloadImage;
+
+  const _ImageMessageView({required this.image, required this.downloadImage});
+
+  @override
+  State<_ImageMessageView> createState() => _ImageMessageViewState();
+}
+
+class _ImageMessageViewState extends State<_ImageMessageView> {
+  late final Future<Uint8List> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.downloadImage(widget.image);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const SizedBox(
+            width: 160,
+            height: 120,
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          );
+        }
+        if (snapshot.hasError) {
+          return const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.broken_image_outlined, size: 18, color: Colors.grey),
+              SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  '图片下载失败',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ),
+            ],
+          );
+        }
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.memory(
+            snapshot.data!,
+            fit: BoxFit.contain,
+            width: 240,
+            errorBuilder: (_, __, ___) =>
+                const Text('[图片]（无法解码）', style: TextStyle(fontSize: 12)),
+          ),
+        );
+      },
     );
   }
 }

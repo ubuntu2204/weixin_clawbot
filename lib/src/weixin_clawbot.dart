@@ -2,10 +2,12 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
 import 'account_store.dart';
+import 'cdn_media.dart';
 import 'client.dart';
 import 'message_poller.dart';
 import 'models.dart';
@@ -26,17 +28,42 @@ class WeixinClawbot {
   /// Run the bundled proxy server (`dart run bin/proxy_server.dart` inside the
   /// example project) which forwards requests to the real iLink endpoint, then
   /// pass `proxyBaseUrl: 'http://localhost:3001'` here.
+  ///
+  /// When set, CDN media downloads are also routed through the proxy at
+  /// `<proxyBaseUrl>/cdn` (the proxy forwards that prefix to the WeChat CDN);
+  /// on native platforms the CDN is contacted directly.
   final String? proxyBaseUrl;
+
+  /// Base URL of the WeChat CDN for inbound media. Usually left `null` to use
+  /// [defaultCdnBaseUrl] (`https://novac2c.cdn.weixin.qq.com/c2c`).
+  final String? cdnBaseUrl;
 
   /// Active pollers keyed by account ID.
   final _pollers = <String, MessagePoller>{};
+
+  /// Media downloader for inbound CDN-backed items (images/files/videos).
+  late final CdnMediaDownloader media = CdnMediaDownloader(
+    cdnBaseUrl: _resolvedCdnBaseUrl,
+    httpClient: _httpClient,
+  );
 
   WeixinClawbot({
     AccountStore? store,
     http.Client? httpClient,
     this.proxyBaseUrl,
+    this.cdnBaseUrl,
   })  : _store = store ?? AccountStore.instance,
         _httpClient = httpClient;
+
+  /// CDN base URL actually used: through the web proxy when one is set,
+  /// otherwise directly (or the custom [cdnBaseUrl]).
+  String get _resolvedCdnBaseUrl {
+    if (cdnBaseUrl != null && cdnBaseUrl!.isNotEmpty) return cdnBaseUrl!;
+    if (proxyBaseUrl != null && proxyBaseUrl!.isNotEmpty) {
+      return '${proxyBaseUrl!.replaceAll(RegExp(r'/+$'), '')}/cdn';
+    }
+    return defaultCdnBaseUrl;
+  }
 
   // ── Account management ───────────────────────────────────────────────────
 
@@ -204,6 +231,22 @@ class WeixinClawbot {
     return poller.replyText(toUserId: to, text: text);
   }
 
+  // ── Inbound media ────────────────────────────────────────────────────────
+
+  /// Downloads and decrypts an inbound image message item.
+  ///
+  /// Returns the raw picture bytes ready for `Image.memory`. Throws
+  /// [ILinkApiException] on network/HTTP errors and `FormatException` when
+  /// decryption fails.
+  Future<Uint8List> downloadImage(ImageItemData image) =>
+      media.downloadImage(image);
+
+  /// Downloads and decrypts a raw CDN media reference (file/video items).
+  ///
+  /// [aesKeyBytes] may be `null` for unencrypted payloads.
+  Future<Uint8List> downloadMedia(CdnMedia media, {Uint8List? aesKeyBytes}) =>
+      this.media.downloadMedia(media, aesKeyBytes: aesKeyBytes);
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   ILinkClient _makeClient({required String? baseUrl, required String token}) {
@@ -220,6 +263,7 @@ class WeixinClawbot {
       poller.stop();
     }
     _pollers.clear();
+    media.dispose();
     _httpClient?.close();
   }
 }

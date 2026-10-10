@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-10
+
+### Added
+
+- README 增加源码仓库地址与官方参考致谢（[Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)）。
+- 接收图片：完整解析 `image_item`（`CdnMedia` 下载参数 + AES 密钥，`WeixinMessage.imageItem`）。
+- `WeixinClawbot.downloadImage()` / `downloadMedia()`：从微信 CDN 下载并按
+  AES-128-ECB + PKCS7 解密入站媒体，支持 `image_item.aeskey`（hex）与
+  `media.aes_key`（base64）两种密钥形态，与官方 openclaw-weixin 接收逻辑一致。
+- Flutter Web：CDN 请求经 `<proxyBaseUrl>/cdn` 转发，`proxy_server.dart` 已支持。
+- example：消息气泡直接渲染入站图片（下载解密 → `Image.memory`）。
+
 ## [0.1.0] - 2026-05-08
 
 ### Added

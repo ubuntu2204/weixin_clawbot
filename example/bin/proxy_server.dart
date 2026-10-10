@@ -5,6 +5,10 @@
 /// This server runs on `localhost:3001`, adds the required CORS headers, and
 /// forwards every request to the real iLink endpoint.
 ///
+/// Inbound media (images/files/videos) live on a second CDN host
+/// (`https://novac2c.cdn.weixin.qq.com/c2c`) which also lacks CORS headers;
+/// requests whose path starts with `/cdn/` are forwarded there.
+///
 /// Usage:
 ///   dart run bin/proxy_server.dart
 ///
@@ -27,6 +31,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 
 const _targetBase = 'https://ilinkai.weixin.qq.com';
+const _cdnTargetBase = 'https://novac2c.cdn.weixin.qq.com/c2c';
 const _listenPort = 3001;
 
 /// Headers the iLink API needs from the client side.
@@ -53,9 +58,13 @@ Future<void> main() async {
   Response handleOptions(Request _) => Response.ok('', headers: _corsHeaders);
 
   Future<Response> handleProxy(Request request) async {
-    // Reconstruct the target URL
+    // Route `/cdn/*` requests to the media CDN; everything else to the API.
+    final isCdn = request.requestedUri.path.startsWith('/cdn/');
+    final host = isCdn ? _cdnTargetBase : _targetBase;
+    final targetPath =
+        isCdn ? request.requestedUri.path.substring('/cdn'.length) : request.requestedUri.path;
     final targetUri = Uri.parse(
-      '$_targetBase${request.requestedUri.path}'
+      '$host$targetPath'
       '${request.requestedUri.hasQuery ? '?${request.requestedUri.query}' : ''}',
     );
 

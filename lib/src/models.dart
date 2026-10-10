@@ -1,6 +1,9 @@
 /// Data models for the WeChat iLink Bot API.
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 // ─── Login / QR Code ───────────────────────────────────────────────────────
 
 /// Response from `GET /ilink/bot/get_bot_qrcode`.
@@ -184,21 +187,151 @@ class MessageItem {
   /// Non-null when [type] == [MessageItemType.voice] (speech-to-text result).
   final String? voiceText;
 
-  /// Raw JSON for unsupported item types (image, file, video).
+  /// Non-null when [type] == [MessageItemType.image]. Contains the CDN
+  /// download parameters and AES key needed to fetch and decrypt the picture.
+  final ImageItemData? image;
+
+  /// Raw JSON for unsupported item types (file, video).
   final Map<String, dynamic>? raw;
 
-  const MessageItem({required this.type, this.text, this.voiceText, this.raw});
+  const MessageItem({
+    required this.type,
+    this.text,
+    this.voiceText,
+    this.image,
+    this.raw,
+  });
 
   factory MessageItem.fromJson(Map<String, dynamic> json) {
     final type = MessageItemType.fromInt(json['type'] as int? ?? 0);
+    final rawImage = json['image_item'] as Map<String, dynamic>?;
     return MessageItem(
       type: type,
       text: (json['text_item'] as Map<String, dynamic>?)?['text'] as String?,
       voiceText:
           (json['voice_item'] as Map<String, dynamic>?)?['text'] as String?,
+      image: rawImage == null ? null : ImageItemData.fromJson(rawImage),
       raw: json,
     );
   }
+}
+
+/// Media descriptor shared by CDN-backed message items (image/file/video).
+///
+/// Mirrors the `CDNMedia` structure of the official openclaw-weixin plugin.
+class CdnMedia {
+  /// Opaque parameter used to build the CDN download URL:
+  /// `{cdnBaseUrl}/download?encrypted_query_param=<this value>`.
+  final String? encryptQueryParam;
+
+  /// AES key as sent by the server (usually base64). See
+  /// [resolveAesKeyBytes] in [ImageItemData] for decoding rules.
+  final String? aesKey;
+
+  /// Optional pre-built download URL. Takes precedence over
+  /// [encryptQueryParam] when present.
+  final String? fullUrl;
+
+  /// `1` = AES-128-ECB encrypted payload.
+  final int? encryptType;
+
+  const CdnMedia({
+    this.encryptQueryParam,
+    this.aesKey,
+    this.fullUrl,
+    this.encryptType,
+  });
+
+  factory CdnMedia.fromJson(Map<String, dynamic> json) {
+    return CdnMedia(
+      encryptQueryParam: json['encrypt_query_param'] as String?,
+      aesKey: json['aes_key'] as String?,
+      fullUrl: json['full_url'] as String?,
+      encryptType: (json['encrypt_type'] as num?)?.toInt(),
+    );
+  }
+}
+
+/// Payload of an image message item (`type == 2`).
+class ImageItemData {
+  final CdnMedia? media;
+
+  /// Top-level AES key in hex form (seen on inbound image items). When
+  /// present it takes precedence over [media.aesKey].
+  final String? aesKeyHex;
+
+  /// Ciphertext size in bytes (AES-ECB padded).
+  final int? midSize;
+
+  const ImageItemData({this.media, this.aesKeyHex, this.midSize});
+
+  factory ImageItemData.fromJson(Map<String, dynamic> json) {
+    return ImageItemData(
+      media: json['media'] == null
+          ? null
+          : CdnMedia.fromJson(json['media'] as Map<String, dynamic>),
+      aesKeyHex: json['aeskey'] as String?,
+      midSize: (json['mid_size'] as num?)?.toInt(),
+    );
+  }
+
+  /// Whether this item carries enough information to be downloaded.
+  bool get isDownloadable =>
+      (media?.encryptQueryParam?.isNotEmpty ?? false) ||
+      (media?.fullUrl?.isNotEmpty ?? false);
+
+  /// Resolves the raw 16-byte AES key from either [aesKeyHex] or
+  /// [media.aesKey], or `null` when the item carries no key (plain payload).
+  ///
+  /// Mirrors the official openclaw-weixin key handling:
+  /// - top-level `aeskey` is a 32-char hex string;
+  /// - `media.aes_key` is base64 of either the raw 16 bytes (images) or of a
+  ///   32-char hex string (files/voice/videos).
+  Uint8List? resolveAesKeyBytes() {
+    final hex = aesKeyHex;
+    if (hex != null && hex.isNotEmpty) {
+      return hexToBytes(hex);
+    }
+    final base64Key = media?.aesKey;
+    if (base64Key == null || base64Key.isEmpty) return null;
+    try {
+      final decoded = base64Decode(base64Key);
+      if (decoded.length == 16) return Uint8List.fromList(decoded);
+      final ascii = String.fromCharCodes(decoded);
+      if (decoded.length == 32 && RegExp(r'^[0-9a-fA-F]{32}$').hasMatch(ascii)) {
+        return hexToBytes(ascii);
+      }
+    } on FormatException {
+      return null;
+    }
+    return null;
+  }
+}
+
+/// Decodes a hex string into bytes. Throws [FormatException] on odd-length
+/// input or invalid characters.
+Uint8List hexToBytes(String hex) {
+  final cleaned = hex.replaceAll(RegExp(r'\s'), '');
+  if (cleaned.length.isOdd) {
+    throw const FormatException('hex string has odd length');
+  }
+  final out = Uint8List(cleaned.length ~/ 2);
+  for (var i = 0; i < out.length; i++) {
+    final hi = _hexDigit(cleaned.codeUnitAt(i * 2));
+    final lo = _hexDigit(cleaned.codeUnitAt(i * 2 + 1));
+    out[i] = (hi << 4) | lo;
+  }
+  return out;
+}
+
+int _hexDigit(int codeUnit) {
+  // '0'..'9'
+  if (codeUnit >= 0x30 && codeUnit <= 0x39) return codeUnit - 0x30;
+  // 'A'..'F'
+  if (codeUnit >= 0x41 && codeUnit <= 0x46) return codeUnit - 0x41 + 10;
+  // 'a'..'f'
+  if (codeUnit >= 0x61 && codeUnit <= 0x66) return codeUnit - 0x61 + 10;
+  throw FormatException('invalid hex digit: ${String.fromCharCode(codeUnit)}');
 }
 
 /// A WeChat iLink message (inbound or outbound).
@@ -276,6 +409,14 @@ class WeixinMessage {
   /// `true` when the message was sent by a real WeChat user (`messageType == 1`).
   /// `false` for messages sent by the bot itself (e.g. echoed outbound sends).
   bool get isFromUser => messageType == 1;
+
+  /// First image segment in [items], or `null` for non-image messages.
+  ImageItemData? get imageItem {
+    for (final item in items) {
+      if (item.image != null) return item.image;
+    }
+    return null;
+  }
 }
 
 /// Long-poll response from `POST /ilink/bot/getupdates`.

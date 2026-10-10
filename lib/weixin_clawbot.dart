@@ -33,6 +33,7 @@
 library weixin_clawbot;
 
 export 'src/account_store.dart' show AccountStore;
+export 'src/cdn_media.dart';
 export 'src/client.dart' show ILinkClient, ILinkApiException;
 export 'src/message_poller.dart' show MessagePoller, MessageSubscription;
 export 'src/models.dart';
