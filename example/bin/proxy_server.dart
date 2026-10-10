@@ -47,15 +47,19 @@ const _forwardHeaders = {
   'authorization',
   'authorizationtype',
   'x-wechat-uin',
+  'ilink-app-id',
   'ilink-app-clientversion',
 };
 
 const _corsHeaders = <String, String>{
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  // Must list every custom header the app sends (each one triggers a CORS
+  // preflight; a missing entry makes the browser abort with
+  // `ClientException: Failed to fetch` before the request is ever sent).
   'Access-Control-Allow-Headers':
       'Content-Type, Authorization, AuthorizationType, '
-          'X-WECHAT-UIN, iLink-App-ClientVersion',
+          'X-WECHAT-UIN, iLink-App-Id, iLink-App-ClientVersion',
   'Access-Control-Max-Age': '86400',
 };
 
