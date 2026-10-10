@@ -1,22 +1,42 @@
-/// Persistent storage for bot account credentials using SharedPreferences.
+/// Persistent storage for bot account credentials.
+///
+/// The persistence backend is pluggable via [AccountStorage]; the default
+/// implementation is platform-dependent:
+/// - native (mobile / desktop / Dart servers): JSON file under
+///   `~/.weixin_clawbot/`
+/// - web: browser localStorage
+/// - other: in-memory
+///
+/// Before 0.3.0 this class used `shared_preferences` (Flutter only); the
+/// public API is unchanged.
 library;
 
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'account_storage.dart';
+import 'account_storage_default.dart' show createDefaultAccountStorage;
 
 import 'models.dart';
 
-const _kAccountsKey = 'weixin_clawbot_accounts';
-
 /// Persists and retrieves [ClawBotAccount] credentials across app restarts.
 class AccountStore {
-  AccountStore._();
+  AccountStore._(this.storage);
 
   static AccountStore? _instance;
 
   /// Returns the singleton instance.
-  static AccountStore get instance => _instance ??= AccountStore._();
+  static AccountStore get instance => _instance ??= AccountStore._(
+        createDefaultAccountStorage(),
+      );
+
+  /// Storage backend used by this store.
+  final AccountStorage storage;
+
+  /// Creates a store with an explicit [storage] backend (e.g. a custom
+  /// database-backed one on servers). The default backend is chosen by
+  /// platform when omitted.
+  factory AccountStore({AccountStorage? storage}) =>
+      AccountStore._(storage ?? createDefaultAccountStorage());
 
   // ── Public API ────────────────────────────────────────────────────────────
 
@@ -32,7 +52,7 @@ class AccountStore {
   }
 
   /// Updates only the [contextToken] and optionally [defaultTo] for the
-  /// account identified by [accountId]. No-op if the account does not exist.
+  /// account identified by [accountId]. No-op when the account does not exist.
   Future<void> updateContextToken({
     required String accountId,
     required String userId,
@@ -53,8 +73,7 @@ class AccountStore {
 
   /// Returns all stored accounts.
   Future<List<ClawBotAccount>> loadAll() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_kAccountsKey) ?? [];
+    final raw = await storage.read();
     return raw
         .map((s) {
           try {
@@ -92,17 +111,13 @@ class AccountStore {
 
   /// Removes all stored accounts.
   Future<void> clear() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_kAccountsKey);
+    await _persist(const []);
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
 
   Future<void> _persist(List<ClawBotAccount> accounts) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(
-      _kAccountsKey,
-      accounts.map((a) => jsonEncode(a.toJson())).toList(),
-    );
+    await storage
+        .write(accounts.map((a) => jsonEncode(a.toJson())).toList());
   }
 }

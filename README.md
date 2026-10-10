@@ -4,7 +4,10 @@
 [![source](https://img.shields.io/badge/source-github-blue)](https://github.com/ubuntu2204/weixin_clawbot)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-一个 Flutter package，通过微信扫码绑定 ClawBot（基于 OpenClaw iLink Bot API），并在 Flutter 应用中接收/发送微信消息。
+一个 **单包双 SDK**（Dart + Flutter）package，通过微信扫码绑定 ClawBot（基于 OpenClaw iLink Bot API），并在应用中接收/发送微信消息。
+
+- **Dart 服务器 / CLI**：直接依赖，无需 Flutter SDK —— 适合后端自动收发消息、下载入站图片。
+- **Flutter 移动端 / 桌面端 / Web**：同一依赖；开箱即用的扫码绑定 Widget 见 `example/lib/qr_login_widget.dart`，可整文件复制到你的应用。
 
 > **源码仓库**：https://github.com/ubuntu2204/weixin_clawbot
 > 协议实现参考腾讯官方插件 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)（详见文末"参考与致谢"）。
@@ -20,8 +23,9 @@
 | 🔗 微信扫码绑定 | 获取 QR 码 → 微信扫描 → 自动保存凭证 |
 | 📥 接收消息 | HTTP 长轮询 (`getupdates`)，消息以 `Stream<WeixinMessage>` 形式推送 |
 | 📤 发送消息 | 发送文本消息，自动携带 `context_token` |
-| 💾 凭证持久化 | 使用 `shared_preferences` 跨应用重启保存账号 |
-| 🧩 开箱即用 Widget | `QrLoginWidget` / `showQrLoginDialog` 直接放入 UI |
+| 💾 凭证持久化 | 可插拔 `AccountStorage`：原生为 `~/.weixin_clawbot/accounts.json` 文件，Web 为 localStorage，可注入自定义后端 |
+| 🖼 接收图片/媒体 | 从微信 CDN 下载并 AES-128-ECB 解密入站图片（与官方 openclaw-weixin 一致） |
+| 🧩 开箱即用 Widget | `QrLoginWidget` / `showQrLoginDialog`（见 `example/lib/qr_login_widget.dart`，可复制复用） |
 
 ---
 
@@ -31,7 +35,7 @@
 
 ```yaml
 dependencies:
-  weixin_clawbot: ^0.2.0
+  weixin_clawbot: ^0.3.0
 ```
 
 ### 2. 前置要求
@@ -51,27 +55,29 @@ import 'package:weixin_clawbot/weixin_clawbot.dart';
 
 final clawbot = WeixinClawbot();
 
-// 方式 A：对话框（推荐）
-final account = await showQrLoginDialog(
-  context: context,
-  clawbot: clawbot,
-);
-if (account != null) {
-  // account.defaultTo 即绑定时扫码的微信用户 ID，可直接作为 toUserId 使用
-  clawbot.connect(account).listen((msg) {
-    print('收到消息：${msg.textContent}');
-  });
-}
-
-// 方式 B：嵌入到自定义页面
-QrLoginWidget(
-  clawbot: clawbot,
-  onLoggedIn: (account) {
-    clawbot.connect(account).listen((msg) {
+// 纯 Dart / 任意平台：监听事件流驱动绑定流程
+await for (final event in clawbot.startQrLogin()) {
+  if (event is QrReadyEvent) {
+    print('请用微信扫描：${event.qrContent}'); // 交给任意二维码渲染器展示
+  }
+  if (event is QrConfirmedEvent) {
+    // account.defaultTo 即绑定时扫码的微信用户 ID，可直接作为 toUserId 使用
+    clawbot.connect(event.account).listen((msg) {
       print('收到消息：${msg.textContent}');
     });
-  },
-)
+    break;
+  }
+}
+```
+
+Flutter 应用可以直接复制 example 的登录对话框 / Widget（内置配对数字输入框）：
+
+```dart
+// import 'qr_login_widget.dart'; // 复制 example/lib/qr_login_widget.dart 后
+final account = await showQrLoginDialog(context: context, clawbot: clawbot);
+if (account != null) {
+  clawbot.connect(account).listen((msg) => print(msg.textContent));
+}
 ```
 
 ### 4. 接收消息
@@ -130,6 +136,55 @@ if (!result.ok) {
 
 > **提示**：`context_token` 由轮询器在收到消息时自动缓存，发送时无需手动传递。
 > 若尚未收到过对方消息（冷启动主动发送），需确保 `account.defaultTo` 不为空，否则会返回错误。
+
+---
+
+## 纯 Dart / 服务端使用
+
+0.3.0 起核心包不再依赖 Flutter，Dart 服务器可直接调用（pub.dev 已声明 Dart 支持）：
+
+```dart
+import 'package:weixin_clawbot/weixin_clawbot.dart';
+
+Future<void> main() async {
+  final clawbot = WeixinClawbot();
+  ClawBotAccount? account =
+      await clawbot.loadAccount(); // ~/.weixin_clawbot/accounts.json
+  if (account == null) {
+    // 首次使用：打印 QR 内容，用任意二维码渲染（终端/网页）完成扫码
+    await for (final event in clawbot.startQrLogin()) {
+      if (event is QrReadyEvent) print('QR: ${event.qrContent}');
+      if (event is QrConfirmedEvent) break;
+    }
+    account = await clawbot.loadAccount();
+  }
+
+  clawbot.connect(account!).listen((msg) async {
+    if (!msg.isFromUser) return;
+    // 收到图片：下载并解密
+    final image = msg.imageItem;
+    if (image != null && image.isDownloadable) {
+      final bytes = await clawbot.downloadImage(image);
+      // bytes = 已解密原始图片字节
+    }
+    // 回复文本
+    await clawbot.sendText(text: '已收到', toUserId: msg.fromUserId);
+  });
+}
+```
+
+服务器场景建议为 `AccountStore` 注入自己的存储后端（如数据库），而不是默认文件：
+
+```dart
+class DbAccountStorage implements AccountStorage {
+  @override
+  Future<List<String>> read() async => /* 从 DB 读取 JSON 字符串列表 */;
+  @override
+  Future<void> write(List<String> entries) async => /* 写回 DB */;
+}
+
+final clawbot = WeixinClawbot(store: AccountStore(storage: DbAccountStorage()));
+```
 
 ---
 

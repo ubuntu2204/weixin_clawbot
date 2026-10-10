@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-10
+
+### Changed
+
+- **包改为纯 Dart 核心，单包声明双 SDK（Breaking）**：移除 `flutter` /
+  `shared_preferences` / `qr_flutter` 依赖 —— Dart 服务器（如 REST 后端）可直接
+  依赖本包调用 iLink Bot API（绑定、收发消息、CDN 媒体下载解密）。pubspec
+  `environment` 保留 `flutter:` 声明，pub.dev 显示 Dart + Flutter 双 SDK 徽章，
+  Flutter 项目照常依赖。
+- **Flutter 登录 UI 移到 example**（Breaking）：`QrLoginWidget` /
+  `showQrLoginDialog` 不再从 `package:weixin_clawbot` 导出，需要时复制
+  `example/lib/qr_login_widget.dart`（依赖 `qr_flutter`）到你的应用，
+  行为与 0.2.0 一致。
+- **`AccountStore` 持久化后端可插拔**（`AccountStorage` 接口）：
+  - 原生平台 / Dart 服务器：JSON 文件 `~/.weixin_clawbot/accounts.json`
+    （可用 `AccountStore(storage: ...)` 注入自定义后端）；
+  - Web：浏览器 localStorage，读写兼容 0.2.x `shared_preferences` 的
+    `flutter.weixin_clawbot_accounts` 旧键；
+  - 不再依赖 `shared_preferences`，纯 Dart 服务器开箱即用。
+- SDK 下限提升到 Dart `>=3.4.0`（Web 存储后端需要 `package:web`）。
+
 ## [0.2.0] - 2026-10-10
 
 ### Added

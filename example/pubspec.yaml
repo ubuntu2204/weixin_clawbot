@@ -12,6 +12,8 @@ dependencies:
     sdk: flutter
   weixin_clawbot:
     path: ../
+  # lib/qr_login_widget.dart 渲染二维码用
+  qr_flutter: ^4.1.0
   # Used by bin/proxy_server.dart for Flutter Web CORS workaround
   shelf: ^1.4.0
   http: ^1.2.0

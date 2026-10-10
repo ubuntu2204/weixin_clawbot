@@ -1,30 +1,36 @@
 name: weixin_clawbot
 description: >
-  A Flutter package for binding WeChat via QR code and receiving/sending messages
-  through the WeChat iLink Bot API (OpenClaw ClawBot).
-version: 0.2.0
+  A pure Dart package for binding WeChat via QR code and receiving/sending
+  messages through the WeChat iLink Bot API (OpenClaw ClawBot). Works with
+  both SDKs: Dart servers/CLIs and Flutter mobile/desktop/web apps. The core
+  protocol layer has no Flutter dependency; a ready-made Flutter login UI is
+  included in the package's example app (lib/qr_login_widget.dart).
+version: 0.3.0
 homepage: https://github.com/ubuntu2204/weixin_clawbot
 repository: https://github.com/ubuntu2204/weixin_clawbot
 issue_tracker: https://github.com/ubuntu2204/weixin_clawbot/issues
+topics:
+  - wechat
+  - dart
+  - http
+  - api
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
-  flutter: '>=3.0.0'
+  sdk: '>=3.4.0 <4.0.0'
+  # 仅声明 Flutter SDK 兼容（Flutter 项目可直接依赖本包）；不引入 flutter 依赖，
+  # 纯 Dart 服务器照常解析。pub.dev 因此显示 Dart + Flutter 双 SDK 徽章。
+  flutter: '>=3.19.0'
 
 dependencies:
-  flutter:
-    sdk: flutter
   http: ^1.2.0
-  shared_preferences: ^2.2.0
-  qr_flutter: ^4.1.0
   uuid: ^4.4.0
   # AES-128-ECB decryption for inbound CDN media (images/files/videos)
   pointycastle: ^3.9.1
+  # Browser localStorage backend for AccountStore (Flutter Web / Dart web)
+  web: ^1.1.0
+  # Default file path handling for the native file storage backend
+  path: ^1.9.0
 
 dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^3.0.0
-
-flutter:
-  # This package does not use Flutter's asset system directly.
+  lints: ^4.0.0
+  test: ^1.25.0

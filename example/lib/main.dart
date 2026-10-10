@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:weixin_clawbot/weixin_clawbot.dart';
+import 'qr_login_widget.dart';
 
 /// Flutter Web 需要通过本地 CORS 代理访问 iLink API。
 /// 运行代理服务器：dart run bin/proxy_server.dart

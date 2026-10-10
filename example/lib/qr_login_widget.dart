@@ -8,9 +8,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import '../models.dart';
-import '../qr_login.dart';
-import '../weixin_clawbot.dart';
+import 'package:weixin_clawbot/weixin_clawbot.dart';
+
+
 
 /// A self-contained widget that shows the WeChat QR-code binding UI.
 ///

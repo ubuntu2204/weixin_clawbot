@@ -3,10 +3,14 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
-
 import 'client.dart';
 import 'models.dart';
+
+/// Pure-Dart replacement for Flutter's `debugPrint` (plain console output).
+void _log(String message) {
+  // ignore: avoid_print
+  print(message);
+}
 
 /// Controls the lifecycle of an active long-poll message subscription.
 ///
@@ -112,7 +116,7 @@ class MessagePoller {
         }
 
         if (!resp.isOk) {
-          debugPrint(
+          _log(
             'weixin_clawbot: getupdates error ret=${resp.ret} '
             'errcode=${resp.errCode} ${resp.errMsg}',
           );
@@ -129,10 +133,10 @@ class MessagePoller {
           _handleInbound(msg);
         }
       } on ILinkApiException catch (e) {
-        debugPrint('weixin_clawbot: API error – $e');
+        _log('weixin_clawbot: API error – $e');
         await _backOff();
       } catch (e) {
-        debugPrint('weixin_clawbot: unexpected error – $e');
+        _log('weixin_clawbot: unexpected error – $e');
         await _backOff();
       }
     }

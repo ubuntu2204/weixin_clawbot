@@ -270,7 +270,7 @@ class CdnMedia {
     this.encryptType,
   });
 
-  factory CdnMedia.fromJson(Map<String, dynamic> json) {
+  factory CdnMedia.fromJson(Map<dynamic, dynamic> json) {
     return CdnMedia(
       encryptQueryParam: json['encrypt_query_param'] as String?,
       aesKey: json['aes_key'] as String?,
@@ -293,11 +293,10 @@ class ImageItemData {
 
   const ImageItemData({this.media, this.aesKeyHex, this.midSize});
 
-  factory ImageItemData.fromJson(Map<String, dynamic> json) {
+  factory ImageItemData.fromJson(Map<dynamic, dynamic> json) {
+    final rawMedia = json['media'];
     return ImageItemData(
-      media: json['media'] == null
-          ? null
-          : CdnMedia.fromJson(json['media'] as Map<String, dynamic>),
+      media: rawMedia is Map ? CdnMedia.fromJson(rawMedia) : null,
       aesKeyHex: json['aeskey'] as String?,
       midSize: (json['mid_size'] as num?)?.toInt(),
     );
