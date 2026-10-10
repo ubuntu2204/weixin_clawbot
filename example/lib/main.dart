@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:weixin_clawbot/weixin_clawbot.dart';
 
 /// Flutter Web 需要通过本地 CORS 代理访问 iLink API。
@@ -59,11 +60,29 @@ class _HomePageState extends State<HomePage> {
   final _toController = TextEditingController();
   bool _sending = false;
 
+  /// Flutter Web：本地 CORS 代理可达性（null=检测中）。
+  bool? _proxyReachable;
+
   @override
   void initState() {
     super.initState();
     // 应用启动时尝试从本地存储中恢复已绑定账号，若存在则直接重连。
     _init();
+    _checkProxy();
+  }
+
+  /// 探测本地 CORS 代理是否在线。任何 HTTP 响应（包括上游的 404）都算
+  /// 可达；只有网络层失败（连接拒绝等）才算离线。
+  Future<void> _checkProxy() async {
+    if (!kIsWeb) return;
+    try {
+      await http
+          .get(Uri.parse('$_webProxyUrl/'))
+          .timeout(const Duration(seconds: 4));
+      if (mounted) setState(() => _proxyReachable = true);
+    } catch (_) {
+      if (mounted) setState(() => _proxyReachable = false);
+    }
   }
 
   /// 从持久化存储中加载已绑定账号并自动重连。
@@ -135,6 +154,24 @@ class _HomePageState extends State<HomePage> {
       );
     } else {
       _controller.clear();
+      // 服务器不会在 getupdates 长轮询里回显 bot 自己发出的消息（与官方
+      // openclaw-weixin 行为一致），这里本地乐观插入，让聊天界面立即显示
+      // 刚刚发送的内容。messageType=2 → 绿色气泡、居右。
+      setState(() {
+        _messages.add(WeixinMessage(
+          seq: 0,
+          messageId: 0,
+          fromUserId: _account!.botId,
+          toUserId: to,
+          clientId: result.clientId,
+          createTimeMs: DateTime.now().millisecondsSinceEpoch,
+          messageType: 2,
+          messageState: 2,
+          items: [
+            MessageItem(type: MessageItemType.text, text: text),
+          ],
+        ));
+      });
     }
   }
 
@@ -172,7 +209,14 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (kIsWeb) const _WebProxyBanner(proxyUrl: _webProxyUrl),
+          if (kIsWeb)
+            _proxyReachable == true
+                ? const _ProxyStatusChip(proxyUrl: _webProxyUrl)
+                : _WebProxyBanner(
+                    proxyUrl: _webProxyUrl,
+                    checking: _proxyReachable == null,
+                    onRetry: _checkProxy,
+                  ),
           const Icon(Icons.qr_code, size: 64, color: Colors.grey),
           const SizedBox(height: 16),
           const Text('尚未绑定微信账号'),
@@ -462,7 +506,15 @@ class _ImageMessageViewState extends State<_ImageMessageView> {
 class _WebProxyBanner extends StatelessWidget {
   final String proxyUrl;
 
-  const _WebProxyBanner({required this.proxyUrl});
+  /// null = 正在检测代理，非 null = 上次检测离线后用户可重试。
+  final bool checking;
+  final Future<void> Function()? onRetry;
+
+  const _WebProxyBanner({
+    required this.proxyUrl,
+    this.checking = false,
+    this.onRetry,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -483,7 +535,7 @@ class _WebProxyBanner extends StatelessWidget {
               Icon(Icons.info_outline, size: 16, color: Colors.amber.shade800),
               const SizedBox(width: 6),
               Text(
-                'Flutter Web 需要 CORS 代理',
+                checking ? '正在检查 CORS 代理…' : '未连接到 CORS 代理',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.amber.shade900,
@@ -517,6 +569,44 @@ class _WebProxyBanner extends StatelessWidget {
           Text(
             '代理地址：$proxyUrl',
             style: TextStyle(fontSize: 11, color: Colors.amber.shade700),
+          ),
+          if (!checking && onRetry != null) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('我已启动代理，重新检测'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 代理在线时的绿色确认条。
+class _ProxyStatusChip extends StatelessWidget {
+  final String proxyUrl;
+
+  const _ProxyStatusChip({required this.proxyUrl});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.green.shade50,
+        border: Border.all(color: Colors.green.shade300),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle, size: 15, color: Colors.green.shade700),
+          const SizedBox(width: 6),
+          Text(
+            '已连接 CORS 代理：$proxyUrl',
+            style: TextStyle(fontSize: 12, color: Colors.green.shade800),
           ),
         ],
       ),
