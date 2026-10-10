@@ -8,6 +8,9 @@
 /// Inbound media (images/files/videos) live on a second CDN host
 /// (`https://novac2c.cdn.weixin.qq.com/c2c`) which also lacks CORS headers;
 /// requests whose path starts with `/cdn/` are forwarded there.
+/// `/redirect/<host>/<path>` forwards to another iLink host
+/// (`scaned_but_redirect` IDC redirects); only `ilinkai.weixin.qq.com`
+/// and its subdomains are allowed.
 ///
 /// Usage:
 ///   dart run bin/proxy_server.dart
@@ -58,13 +61,39 @@ Future<void> main() async {
   Response handleOptions(Request _) => Response.ok('', headers: _corsHeaders);
 
   Future<Response> handleProxy(Request request) async {
-    // Route `/cdn/*` requests to the media CDN; everything else to the API.
-    final isCdn = request.requestedUri.path.startsWith('/cdn/');
-    final host = isCdn ? _cdnTargetBase : _targetBase;
-    final targetPath =
-        isCdn ? request.requestedUri.path.substring('/cdn'.length) : request.requestedUri.path;
+    // Route rules, checked in order:
+    //   /redirect/<host>/<path> → https://<host>/<path>   (IDC redirects,
+    //       restricted to ilinkai.weixin.qq.com and subdomains)
+    //   /cdn/<path>             → the media CDN             (inbound media)
+    //   anything else           → the iLink API host
+    final requestedPath = request.requestedUri.path;
+
+    String? targetHost;
+    var targetPath = requestedPath;
+
+    final redirectMatch =
+        RegExp(r'^/redirect/([^/]+)(/.*)$').firstMatch(requestedPath);
+    if (redirectMatch != null) {
+      final host = redirectMatch.group(1)!;
+      final allowed = host == 'ilinkai.weixin.qq.com' ||
+          host.endsWith('.ilinkai.weixin.qq.com');
+      if (!allowed) {
+        return Response.badRequest(
+          body: 'redirect host not allowed: $host',
+          headers: _corsHeaders,
+        );
+      }
+      targetHost = 'https://$host';
+      targetPath = redirectMatch.group(2)!;
+    } else if (requestedPath.startsWith('/cdn/')) {
+      targetHost = _cdnTargetBase;
+      targetPath = requestedPath.substring('/cdn'.length);
+    } else {
+      targetHost = _targetBase;
+    }
+
     final targetUri = Uri.parse(
-      '$host$targetPath'
+      '$targetHost$targetPath'
       '${request.requestedUri.hasQuery ? '?${request.requestedUri.query}' : ''}',
     );
 

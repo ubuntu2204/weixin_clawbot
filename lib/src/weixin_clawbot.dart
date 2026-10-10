@@ -89,29 +89,43 @@ class WeixinClawbot {
 
   // ── QR Login ─────────────────────────────────────────────────────────────
 
-  /// Returns a stream of [QrLoginEvent]s for the QR-code WeChat binding flow.
+  /// Handles `scaned_but_redirect` IDC redirects. On Flutter Web the new host
+  /// is reached through the local proxy's `/redirect/<host>` prefix; natively
+  /// it is contacted directly. Hosts outside the iLink domain are ignored.
+  String? _resolveRedirectBaseUrl(String host) {
+    if (host != 'ilinkai.weixin.qq.com' &&
+        !host.endsWith('.ilinkai.weixin.qq.com')) {
+      return null;
+    }
+    if (proxyBaseUrl != null && proxyBaseUrl!.isNotEmpty) {
+      return '${proxyBaseUrl!.replaceAll(RegExp(r'/+$'), '')}/redirect/$host';
+    }
+    return 'https://$host';
+  }
+
+  /// Starts the QR-code WeChat binding flow and returns a [QrLoginSession].
   ///
-  /// Listen to the stream and display [QrReadyEvent.qrContent] as a QR image.
-  /// On [QrConfirmedEvent] the account is automatically persisted and can be
-  /// used with [connect].
-  ///
-  /// Example:
-  /// ```dart
-  /// clawbot.startQrLogin().listen((event) {
-  ///   if (event is QrReadyEvent) showQr(event.qrContent);
-  ///   if (event is QrConfirmedEvent) clawbot.connect(event.account);
-  /// });
-  /// ```
-  Stream<QrLoginEvent> startQrLogin({
+  /// Prefer this over [startQrLogin] when the UI needs to react to
+  /// [QrVerifyCodeRequiredEvent] (the pairing number shown on the phone)
+  /// via [QrLoginSession.submitVerifyCode].
+  Future<QrLoginSession> startQrLoginSession({
     String? baseUrl,
-    Duration pollInterval = const Duration(seconds: 2),
+    Duration pollInterval = const Duration(seconds: 1),
     Duration loginTimeout = const Duration(minutes: 8),
-  }) {
+  }) async {
     final client = _makeClient(baseUrl: baseUrl, token: '');
+    // Pass locally-known bot tokens so the server can answer `binded_redirect`
+    // when the scanned bot is already bound (mirrors the official plugin).
+    final accounts = await _store.loadAll();
     final flow = QrLoginFlow(
       client: client,
       pollInterval: pollInterval,
       loginTimeout: loginTimeout,
+      localTokenList: [
+        for (final a in accounts)
+          if (a.token.isNotEmpty) a.token,
+      ],
+      redirectBaseUrlResolver: _resolveRedirectBaseUrl,
     );
 
     final controller = StreamController<QrLoginEvent>.broadcast();
@@ -129,11 +143,39 @@ class WeixinClawbot {
           onError: controller.addError,
           onDone: () {
             if (!controller.isClosed) controller.close();
-            client.dispose();
           },
         );
 
-    return controller.stream;
+    return QrLoginSession._(controller.stream, flow, client);
+  }
+
+  /// Returns a stream of [QrLoginEvent]s for the QR-code WeChat binding flow.
+  ///
+  /// Listen to the stream and display [QrReadyEvent.qrContent] as a QR image.
+  /// On [QrConfirmedEvent] the account is automatically persisted and can be
+  /// used with [connect].
+  ///
+  /// If the server asks for a pairing number ([QrVerifyCodeRequiredEvent]),
+  /// use [startQrLoginSession] instead so the code can be submitted back.
+  ///
+  /// Example:
+  /// ```dart
+  /// clawbot.startQrLogin().listen((event) {
+  ///   if (event is QrReadyEvent) showQr(event.qrContent);
+  ///   if (event is QrConfirmedEvent) clawbot.connect(event.account);
+  /// });
+  /// ```
+  Stream<QrLoginEvent> startQrLogin({
+    String? baseUrl,
+    Duration pollInterval = const Duration(seconds: 1),
+    Duration loginTimeout = const Duration(minutes: 8),
+  }) async* {
+    final session = await startQrLoginSession(
+      baseUrl: baseUrl,
+      pollInterval: pollInterval,
+      loginTimeout: loginTimeout,
+    );
+    yield* session.events;
   }
 
   // ── Messaging ────────────────────────────────────────────────────────────
@@ -266,4 +308,21 @@ class WeixinClawbot {
     media.dispose();
     _httpClient?.close();
   }
+}
+
+/// Handle to an in-flight QR login: the [events] stream plus the ability to
+/// submit the pairing number when the server asks for one.
+class QrLoginSession {
+  final Stream<QrLoginEvent> events;
+  final QrLoginFlow _flow;
+  final ILinkClient _client;
+
+  QrLoginSession._(this.events, this._flow, this._client);
+
+  /// Submits the pairing number displayed on the phone in response to a
+  /// [QrVerifyCodeRequiredEvent]. No-op when the flow is not waiting for one.
+  void submitVerifyCode(String code) => _flow.submitVerifyCode(code);
+
+  /// Releases the underlying HTTP client (the flow has finished).
+  void dispose() => _client.dispose();
 }

@@ -12,6 +12,20 @@ import 'models.dart';
 const _defaultBaseUrl = 'https://ilinkai.weixin.qq.com';
 const _channelVersion = '1.0.2';
 
+/// `iLink-App-Id` header value used by the official openclaw-weixin plugin.
+const _ilinkAppId = 'bot';
+
+/// `iLink-App-ClientVersion` header: uint32 encoded as 0x00MMNNPP
+/// (major<<16 | minor<<8 | patch, e.g. "1.0.2" → 65538).
+String _buildClientVersionHeader(String version) {
+  final parts = version.split('.').map((p) => int.tryParse(p) ?? 0).toList();
+  final major = parts.isNotEmpty ? parts[0] : 0;
+  final minor = parts.length > 1 ? parts[1] : 0;
+  final patch = parts.length > 2 ? parts[2] : 0;
+  return (((major & 0xff) << 16) | ((minor & 0xff) << 8) | (patch & 0xff))
+      .toString();
+}
+
 /// Exception thrown when the iLink API returns a non-OK HTTP status or a
 /// payload with a non-zero `ret` / `errcode` field.
 class ILinkApiException implements Exception {
@@ -47,10 +61,20 @@ class ILinkClient {
 
   /// Fetches a QR code for bot registration (WeChat scan-to-bind).
   ///
-  /// `bot_type=3` is the standard ClawBot type.
-  Future<QrCodeResponse> fetchLoginQrCode() async {
+  /// `bot_type=3` is the standard ClawBot type. The official plugin sends this
+  /// as a POST with the list of locally-known bot tokens
+  /// (`local_token_list`), which lets the server answer `binded_redirect`
+  /// when the scanned bot is already bound to one of them.
+  Future<QrCodeResponse> fetchLoginQrCode({
+    List<String> localTokenList = const [],
+  }) async {
+    final body = jsonEncode({'local_token_list': localTokenList});
     final uri = Uri.parse('$baseUrl/ilink/bot/get_bot_qrcode?bot_type=3');
-    final resp = await _http.get(uri);
+    final resp = await _http.post(
+      uri,
+      headers: _buildHeaders(body, withAuth: false),
+      body: body,
+    );
     _assertHttpOk(resp, 'get_bot_qrcode');
     final json = jsonDecode(resp.body) as Map<String, dynamic>;
     return QrCodeResponse.fromJson(json);
@@ -58,19 +82,37 @@ class ILinkClient {
 
   /// Polls the login status for the given [qrCode] identifier.
   ///
-  /// The server uses long-polling internally; typical wait is a few seconds.
-  Future<QrStatusResponse> pollQrStatus(String qrCode) async {
-    final encoded = Uri.encodeComponent(qrCode);
-    final uri =
-        Uri.parse('$baseUrl/ilink/bot/get_qrcode_status?qrcode=$encoded');
-    final resp = await _http.get(
-      uri,
-      headers: {'iLink-App-ClientVersion': '1'},
-    );
+  /// The server long-polls internally (typically up to ~35s per request) and
+  /// responds as soon as the status changes. Pass [verifyCode] (the pairing
+  /// number shown on the phone) when the previous response asked for one via
+  /// [QrLoginStatus.needVerifyCode].
+  Future<QrStatusResponse> pollQrStatus(
+    String qrCode, {
+    String? verifyCode,
+    Duration timeout = const Duration(seconds: 40),
+  }) async {
+    var endpoint =
+        '/ilink/bot/get_qrcode_status?qrcode=${Uri.encodeComponent(qrCode)}';
+    if (verifyCode != null && verifyCode.isNotEmpty) {
+      endpoint += '&verify_code=${Uri.encodeComponent(verifyCode)}';
+    }
+    final uri = Uri.parse('$baseUrl$endpoint');
+    final resp = await _http.get(uri, headers: {
+      'iLink-App-Id': _ilinkAppId,
+      'iLink-App-ClientVersion': _buildClientVersionHeader(_channelVersion),
+    }).timeout(timeout);
     _assertHttpOk(resp, 'get_qrcode_status');
     final json = jsonDecode(resp.body) as Map<String, dynamic>;
     return QrStatusResponse.fromJson(json);
   }
+
+  /// Returns a client pointed at [baseUrl], sharing the underlying HTTP
+  /// connection pool. Used to follow `scaned_but_redirect` IDC redirects.
+  ILinkClient rebase(String baseUrl) => ILinkClient(
+        baseUrl: baseUrl,
+        token: token,
+        httpClient: _http,
+      );
 
   // ── Receive messages ─────────────────────────────────────────────────────
 
@@ -167,14 +209,16 @@ class ILinkClient {
         .timeout(timeout);
   }
 
-  Map<String, String> _buildHeaders(String body) {
+  Map<String, String> _buildHeaders(String body, {bool withAuth = true}) {
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'AuthorizationType': 'ilink_bot_token',
       'Content-Length': utf8.encode(body).length.toString(),
       'X-WECHAT-UIN': _randomWechatUin(),
+      'iLink-App-Id': _ilinkAppId,
+      'iLink-App-ClientVersion': _buildClientVersionHeader(_channelVersion),
     };
-    if (token.isNotEmpty) {
+    if (withAuth && token.isNotEmpty) {
       headers['Authorization'] = 'Bearer $token';
     }
     return headers;

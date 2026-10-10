@@ -38,6 +38,20 @@ enum QrLoginStatus {
   /// QR code has expired; re-fetch a new one.
   expired,
 
+  /// Server asks the client to switch the polling host (IDC redirect).
+  /// See [QrStatusResponse.redirectHost].
+  scanedButRedirect,
+
+  /// The phone displays a pairing number that must be submitted back via
+  /// `verify_code` on the next status poll.
+  needVerifyCode,
+
+  /// The verify code was wrong too many times; polling is paused server-side.
+  verifyCodeBlocked,
+
+  /// The scanned bot is already bound; no new credentials will be issued.
+  bindedRedirect,
+
   /// Unknown or unrecognised status string.
   unknown,
 }
@@ -45,6 +59,9 @@ enum QrLoginStatus {
 /// Response from `GET /ilink/bot/get_qrcode_status`.
 class QrStatusResponse {
   final QrLoginStatus status;
+
+  /// Raw status string as sent by the server (useful for diagnostics).
+  final String? rawStatus;
 
   /// Bearer token for the bot. Populated when [status] == [QrLoginStatus.confirmed].
   final String? botToken;
@@ -58,12 +75,17 @@ class QrStatusResponse {
   /// API base URL returned by the server (may differ from the default).
   final String? baseUrl;
 
+  /// New polling host when [status] == [QrLoginStatus.scanedButRedirect].
+  final String? redirectHost;
+
   const QrStatusResponse({
     required this.status,
+    this.rawStatus,
     this.botToken,
     this.ilinkBotId,
     this.ilinkUserId,
     this.baseUrl,
+    this.redirectHost,
   });
 
   factory QrStatusResponse.fromJson(Map<String, dynamic> json) {
@@ -73,15 +95,21 @@ class QrStatusResponse {
       'scaned' => QrLoginStatus.scanned,
       'confirmed' => QrLoginStatus.confirmed,
       'expired' => QrLoginStatus.expired,
+      'scaned_but_redirect' => QrLoginStatus.scanedButRedirect,
+      'need_verifycode' => QrLoginStatus.needVerifyCode,
+      'verify_code_blocked' => QrLoginStatus.verifyCodeBlocked,
+      'binded_redirect' => QrLoginStatus.bindedRedirect,
       _ => QrLoginStatus.unknown,
     };
 
     return QrStatusResponse(
       status: status,
+      rawStatus: rawStatus,
       botToken: json['bot_token'] as String?,
       ilinkBotId: json['ilink_bot_id'] as String?,
       ilinkUserId: json['ilink_user_id'] as String?,
       baseUrl: json['baseurl'] as String?,
+      redirectHost: json['redirect_host'] as String?,
     );
   }
 }

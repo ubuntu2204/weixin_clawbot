@@ -191,9 +191,28 @@ final clawbot = WeixinClawbot(
 |------|------|
 | `QrReadyEvent(qrContent)` | QR 码内容就绪，传给 `QrImageView` 显示 |
 | `QrScannedEvent` | 用户已在微信扫码，等待手机端确认 |
+| `QrVerifyCodeRequiredEvent(isRetry)` | 手机显示配对数字，需调用 `submitVerifyCode` 提交 |
+| `QrVerifyCodeBlockedEvent` | 配对数字错误次数过多，流程终止 |
+| `QrAlreadyBoundEvent` | 该 ClawBot 已绑定（本机已存其凭据），无需重复扫码 |
 | `QrConfirmedEvent(account)` | 登录成功，账号已自动持久化 |
 | `QrExpiredEvent` | QR 码超时过期，需重新获取 |
 | `QrErrorEvent(error, stackTrace)` | 网络或服务端错误 |
+
+**配对数字（`need_verifycode`）**：部分账号扫码后微信会在手机上显示一组数字，
+需要把它输入回应用（官方 CLI 是终端输入，Flutter 端由 `QrLoginWidget` 内置输入框处理）：
+
+```dart
+final session = await clawbot.startQrLoginSession();
+session.events.listen((event) {
+  if (event is QrVerifyCodeRequiredEvent) {
+    // 从输入框拿到数字后提交（QrLoginWidget 已内置此交互）
+    session.submitVerifyCode(userInput);
+  }
+  if (event is QrConfirmedEvent) {
+    clawbot.connect(event.account);
+  }
+});
+```
 
 ### `WeixinMessage`
 

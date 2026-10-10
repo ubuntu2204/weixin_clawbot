@@ -56,6 +56,7 @@ class QrLoginWidget extends StatefulWidget {
 
 class _QrLoginWidgetState extends State<QrLoginWidget> {
   _UiState _state = _Loading();
+  QrLoginSession? _session;
 
   @override
   void initState() {
@@ -63,12 +64,24 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
     _startLogin();
   }
 
-  void _startLogin() {
+  @override
+  void dispose() {
+    _session?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _startLogin() async {
     setState(() => _state = _Loading());
 
-    widget.clawbot
-        .startQrLogin(baseUrl: widget.baseUrl)
-        .listen(_onEvent, onError: _onError);
+    final session = await widget.clawbot.startQrLoginSession(
+      baseUrl: widget.baseUrl,
+    );
+    if (!mounted) {
+      session.dispose();
+      return;
+    }
+    _session = session;
+    session.events.listen(_onEvent, onError: _onError);
   }
 
   void _onEvent(QrLoginEvent event) {
@@ -82,6 +95,21 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
           setState(() => _state = _QrReady(event.qrContent));
         case QrScannedEvent():
           setState(() => _state = _Scanned());
+        case QrVerifyCodeRequiredEvent():
+          setState(() => _state = _VerifyCode(event.isRetry));
+        case QrVerifyCodeBlockedEvent():
+          setState(() => _state = const _Terminal(
+                icon: Icons.block,
+                label: '配对码错误次数过多，请稍后重试',
+                color: Colors.red,
+                allowRetry: true,
+              ));
+        case QrAlreadyBoundEvent():
+          setState(() => _state = const _Terminal(
+                icon: Icons.link,
+                label: '该 ClawBot 已绑定过（凭据已在本机）。\n请先在应用内使用已保存账号，或解绑后重新扫码。',
+                color: Colors.orange,
+              ));
         case QrConfirmedEvent():
           setState(() => _state = _Confirmed(event.account));
           widget.onLoggedIn?.call(event.account);
@@ -100,6 +128,11 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
       if (!mounted) return;
       setState(() => _state = _Error(err.toString()));
     });
+  }
+
+  void _submitVerifyCode(String code) {
+    _session?.submitVerifyCode(code);
+    setState(() => _state = _Scanned());
   }
 
   @override
@@ -140,6 +173,29 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
             icon: Icons.qr_code_scanner,
             label: '已扫码，请在手机上确认登录…',
             color: Colors.orange,
+          ),
+        _VerifyCode(isRetry: final isRetry) => _VerifyCodeInput(
+            isRetry: isRetry,
+            onSubmit: _submitVerifyCode,
+          ),
+        _Terminal(
+          icon: final icon,
+          label: final label,
+          color: final color,
+          allowRetry: final allowRetry,
+        ) =>
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _StatusTile(icon: icon, label: label, color: color),
+              if (allowRetry) ...[
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: _startLogin,
+                  child: const Text('重试'),
+                ),
+              ],
+            ],
           ),
         _Confirmed(account: final account) => _StatusTile(
             icon: Icons.check_circle,
@@ -183,7 +239,9 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
 
 // ── Private state types ────────────────────────────────────────────────────
 
-sealed class _UiState {}
+sealed class _UiState {
+  const _UiState();
+}
 
 final class _Loading extends _UiState {
   _Loading();
@@ -196,6 +254,108 @@ final class _QrReady extends _UiState {
 
 final class _Scanned extends _UiState {
   _Scanned();
+}
+
+final class _VerifyCode extends _UiState {
+  final bool isRetry;
+  _VerifyCode(this.isRetry);
+}
+
+/// Terminal outcome (verify-code blocked / already bound). Shows a retry
+/// button when [allowRetry] is set.
+final class _Terminal extends _UiState {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final bool allowRetry;
+  const _Terminal({
+    required this.icon,
+    required this.label,
+    required this.color,
+    this.allowRetry = false,
+  });
+}
+
+/// Input field for the pairing number shown on the phone
+/// (`need_verifycode`).
+class _VerifyCodeInput extends StatefulWidget {
+  final bool isRetry;
+  final void Function(String code) onSubmit;
+
+  const _VerifyCodeInput({required this.isRetry, required this.onSubmit});
+
+  @override
+  State<_VerifyCodeInput> createState() => _VerifyCodeInputState();
+}
+
+class _VerifyCodeInputState extends State<_VerifyCodeInput> {
+  final _controller = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              widget.isRetry ? Icons.warning_amber : Icons.pin,
+              size: 32,
+              color: widget.isRetry ? Colors.red : Colors.orange,
+            ),
+            const SizedBox(width: 12),
+            Flexible(
+              child: Text(
+                widget.isRetry
+                    ? '输入的数字不匹配，请重新输入手机微信显示的数字：'
+                    : '请输入手机微信上显示的配对数字：',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.orange.shade800),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 140,
+              child: TextField(
+                controller: _controller,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                textAlign: TextAlign.center,
+                decoration: const InputDecoration(
+                  hintText: '配对数字',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                  counterText: '',
+                ),
+                maxLength: 6,
+                onSubmitted: (_) => _submit(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _submit,
+              child: const Text('确认'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  void _submit() {
+    final code = _controller.text.trim();
+    if (code.isEmpty) return;
+    widget.onSubmit(code);
+  }
 }
 
 final class _Confirmed extends _UiState {

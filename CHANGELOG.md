@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - README 增加源码仓库地址与官方参考致谢（[Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)）。
+- 扫码绑定对齐官方 `waitForWeixinLogin` 状态机：
+  - `need_verifycode`：手机微信显示配对数字时，UI 弹出输入框（`QrVerifyCodeRequiredEvent` +
+    `QrLoginSession.submitVerifyCode`），以 `&verify_code=` 提交后继续登录；
+  - `scaned_but_redirect`：IDC 重定向自动切换轮询域名（Web 端经代理 `/redirect/<host>`）；
+  - `binded_redirect` / `verify_code_blocked`：明确的终止提示事件；
+  - `get_bot_qrcode` 改为 POST + `local_token_list`（携带本机已存 bot token，可判定已绑定）。
 - 接收图片：完整解析 `image_item`（`CdnMedia` 下载参数 + AES 密钥，`WeixinMessage.imageItem`）。
 - `WeixinClawbot.downloadImage()` / `downloadMedia()`：从微信 CDN 下载并按
   AES-128-ECB + PKCS7 解密入站媒体，支持 `image_item.aeskey`（hex）与
