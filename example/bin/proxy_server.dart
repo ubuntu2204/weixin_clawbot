@@ -33,6 +33,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 
@@ -59,7 +60,25 @@ const _corsHeaders = <String, String>{
 };
 
 Future<void> main() async {
-  final client = http.Client();
+  // IMPORTANT: force direct connections regardless of http_proxy/https_proxy
+  // environment variables. Dart's HttpClient honours them, and shell sessions
+  // where Clash Verge once ran keep exporting `https_proxy=http://127.0.0.1:7897`
+  // long after Clash has exited — the upstream request then dies with
+  // `Connection refused 127.0.0.1:<port>` even though the network is fine.
+  final innerClient = HttpClient()..findProxy = (uri) => 'DIRECT';
+  final client = IOClient(innerClient);
+
+  final hasProxyEnv = [
+    'http_proxy',
+    'https_proxy',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'all_proxy',
+  ].any(Platform.environment.containsKey);
+  if (hasProxyEnv) {
+    print('! 检测到 http(s)_proxy 环境变量，已强制直连上游 (findProxy=DIRECT)。');
+  }
 
   Response handleOptions(Request _) => Response.ok('', headers: _corsHeaders);
 
