@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-12
+
+### Added
+
+- **换绑（re-bind / account hand-over）支持**：`QrLoginFlow` / `startQrLogin` /
+  `startQrLoginSession` 新增 `allowRebind` 参数。开启后：
+  - `get_bot_qrcode` 不携带 `local_token_list`，服务端为扫码微信创建**新 bot**，
+    一次扫码即可把该微信换绑到新账号；
+  - 若服务端仍返回 `binded_redirect` 并回传已有 bot 凭据，则直接以
+    `QrConfirmedEvent` 收尾（接管既有绑定）；
+  - 否则发一次 `QrAlreadyBoundEvent` 后自动获取新二维码供二次扫码（限一次）。
+- `QrAlreadyBoundEvent` 携带 `existingWechatUserid`（响应中的
+  `ilink_user_id`）与 `existingAccount`（响应回传凭据时非空），调用方可据此
+  在自有用户体系中定位旧绑定做迁移或接管。
+
+### Changed
+
+- `QrLoginFlow` 内部 `confirmed` / `binded_redirect` 凭据组装统一为
+  `_accountFromStatus`（行为不变）。
+
 ## [0.3.0] - 2026-10-10
 
 ### Changed

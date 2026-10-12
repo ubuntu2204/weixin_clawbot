@@ -5,7 +5,7 @@ description: >
   both SDKs: Dart servers/CLIs and Flutter mobile/desktop/web apps. The core
   protocol layer has no Flutter dependency; a ready-made Flutter login UI is
   included in the package's example app (lib/qr_login_widget.dart).
-version: 0.3.0
+version: 0.4.0
 homepage: https://github.com/ubuntu2204/weixin_clawbot
 repository: https://github.com/ubuntu2204/weixin_clawbot
 issue_tracker: https://github.com/ubuntu2204/weixin_clawbot/issues

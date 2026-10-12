@@ -11,8 +11,7 @@
 
 > **源码仓库**：https://github.com/ubuntu2204/weixin_clawbot
 > 协议实现参考腾讯官方插件 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)（详见文末"参考与致谢"）。
-
-灵感来源：[@claw-lab/wxclawbot-cli](https://github.com/lroolle/wxclawbot-cli) 和 [openclaw-weixin-cli](https://github.com/pzx521521/openclaw-weixin-cli)。
+> 灵感来源：[@claw-lab/wxclawbot-cli](https://github.com/lroolle/wxclawbot-cli) 和 [openclaw-weixin-cli](https://github.com/pzx521521/openclaw-weixin-cli)。
 
 ---
 
@@ -35,7 +34,7 @@
 
 ```yaml
 dependencies:
-  weixin_clawbot: ^0.3.0
+  weixin_clawbot: ^0.4.0
 ```
 
 ### 2. 前置要求

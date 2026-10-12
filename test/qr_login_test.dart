@@ -40,17 +40,21 @@ void main() {
   group('QrLoginFlow', () {
     // Captured by the mock: every get_qrcode_status URL, in order.
     late List<Uri> pollUrls;
+    // Captured by the mock: raw body of every get_bot_qrcode request.
+    late List<String> qrcodeBodies;
 
     MockClient mockClient({
       required List<Map<String, dynamic>> statusResponses,
     }) {
       var pollCount = 0;
       pollUrls = <Uri>[];
+      qrcodeBodies = <String>[];
 
       return MockClient((req) async {
         if (req.url.path.endsWith('get_bot_qrcode')) {
           expect(req.method.toUpperCase(), 'POST',
               reason: 'official plugin uses POST');
+          qrcodeBodies.add(req.body);
           return http.Response(
             jsonEncode({'qrcode': 'QRC123', 'qrcode_img_content': 'https://qr'}),
             200,
@@ -67,10 +71,12 @@ void main() {
       });
     }
 
-    QrLoginFlow makeFlow(http.Client client) => QrLoginFlow(
+    QrLoginFlow makeFlow(http.Client client, {bool allowRebind = false}) =>
+        QrLoginFlow(
           client: ILinkClient(token: '', httpClient: client),
           pollInterval: const Duration(milliseconds: 10),
           localTokenList: const ['tok-old'],
+          allowRebind: allowRebind,
         );
 
     Future<List<QrLoginEvent>> collect(
@@ -169,14 +175,63 @@ void main() {
 
     test('binded_redirect terminates the flow as already bound', () async {
       final client = mockClient(statusResponses: [
-        {'status': 'binded_redirect'},
+        {'status': 'binded_redirect', 'ilink_user_id': 'WX@x'},
       ]);
 
       final flow = makeFlow(client);
       final events = await collect(flow);
 
-      expect(events.whereType<QrAlreadyBoundEvent>(), isNotEmpty);
+      final bound = events.whereType<QrAlreadyBoundEvent>().single;
+      expect(bound.existingWechatUserid, 'WX@x');
       expect(events.whereType<QrConfirmedEvent>(), isEmpty);
+    });
+
+    test('binded_redirect with echoed credentials logs in directly', () async {
+      final client = mockClient(statusResponses: [
+        {
+          'status': 'binded_redirect',
+          'bot_token': 'T-EXISTING',
+          'ilink_bot_id': 'B@x',
+          'ilink_user_id': 'WX@x',
+        },
+      ]);
+
+      final flow = makeFlow(client);
+      final events = await collect(flow);
+
+      final confirmed = events.whereType<QrConfirmedEvent>().single;
+      expect(confirmed.account.token, 'T-EXISTING');
+      expect(confirmed.account.botId, 'B@x');
+      expect(confirmed.account.defaultTo, 'WX@x');
+      expect(events.whereType<QrAlreadyBoundEvent>(), isEmpty);
+    });
+
+    test(
+        'allowRebind restarts with a fresh QR code (empty local_token_list) '
+        'after binded_redirect and completes on the second scan', () async {
+      final client = mockClient(statusResponses: [
+        {'status': 'binded_redirect', 'ilink_user_id': 'WX@x'},
+        {'status': 'confirmed', 'bot_token': 'T-NEW', 'ilink_bot_id': 'B2@x'},
+      ]);
+
+      final flow = makeFlow(client, allowRebind: true);
+      final events = await collect(flow);
+
+      final bound = events.whereType<QrAlreadyBoundEvent>().single;
+      expect(bound.existingWechatUserid, 'WX@x');
+      expect(events.whereType<QrReadyEvent>(), hasLength(2));
+      final confirmed = events.whereType<QrConfirmedEvent>().single;
+      expect(confirmed.account.token, 'T-NEW');
+
+      // Both QR requests must omit the local token list so the server
+      // issues a NEW bot (account hand-over) instead of binded_redirect.
+      expect(qrcodeBodies, hasLength(2));
+      for (final body in qrcodeBodies) {
+        expect(
+          (jsonDecode(body) as Map<String, dynamic>)['local_token_list'],
+          isEmpty,
+        );
+      }
     });
 
     test('isRetry is set when server asks for the code again', () async {

@@ -125,14 +125,19 @@ class WeixinClawbot {
   /// Prefer this over [startQrLogin] when the UI needs to react to
   /// [QrVerifyCodeRequiredEvent] (the pairing number shown on the phone)
   /// via [QrLoginSession.submitVerifyCode].
+  ///
+  /// With [allowRebind] the flow supports re-binding an already-bound WeChat
+  /// user to a NEW bot (account hand-over); see [QrLoginFlow.allowRebind].
   Future<QrLoginSession> startQrLoginSession({
     String? baseUrl,
     Duration pollInterval = const Duration(seconds: 1),
     Duration loginTimeout = const Duration(minutes: 8),
+    bool allowRebind = false,
   }) async {
     final client = _makeClient(baseUrl: baseUrl, token: '');
     // Pass locally-known bot tokens so the server can answer `binded_redirect`
     // when the scanned bot is already bound (mirrors the official plugin).
+    // In re-bind mode the list is omitted inside the flow (new bot instead).
     final accounts = await _store.loadAll();
     final flow = QrLoginFlow(
       client: client,
@@ -143,6 +148,7 @@ class WeixinClawbot {
           if (a.token.isNotEmpty) a.token,
       ],
       redirectBaseUrlResolver: _resolveRedirectBaseUrl,
+      allowRebind: allowRebind,
     );
 
     final controller = StreamController<QrLoginEvent>.broadcast();
@@ -186,11 +192,13 @@ class WeixinClawbot {
     String? baseUrl,
     Duration pollInterval = const Duration(seconds: 1),
     Duration loginTimeout = const Duration(minutes: 8),
+    bool allowRebind = false,
   }) async* {
     final session = await startQrLoginSession(
       baseUrl: baseUrl,
       pollInterval: pollInterval,
       loginTimeout: loginTimeout,
+      allowRebind: allowRebind,
     );
     yield* session.events;
   }
