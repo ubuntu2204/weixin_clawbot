@@ -7,10 +7,12 @@
 ///
 /// Inbound media (images/files/videos) live on a second CDN host
 /// (`https://novac2c.cdn.weixin.qq.com/c2c`) which also lacks CORS headers;
-/// requests whose path starts with `/cdn/` are forwarded there.
+/// requests whose path starts with `/cdn/` are forwarded there — both the
+/// `download` path (inbound) and the `upload` path (outbound media).
 /// `/cdnfull/<host>/<path>` forwards to other WeChat media CDN hosts — used
-/// for the server-provided `media.full_url` download links; only
-/// `weixin.qq.com` / `qq.com` and their subdomains are allowed.
+/// for the server-provided media `full_url` download links and the
+/// `upload_full_url` upload links; only `weixin.qq.com` / `qq.com` and their
+/// subdomains are allowed.
 /// `/redirect/<host>/<path>` forwards to another iLink host
 /// (`scaned_but_redirect` IDC redirects); only `ilinkai.weixin.qq.com`
 /// and its subdomains are allowed.
@@ -49,7 +51,14 @@ const _forwardHeaders = {
   'x-wechat-uin',
   'ilink-app-id',
   'ilink-app-clientversion',
+  'skroutetag',
 };
+
+/// Response headers the browser is allowed to read. `x-encrypted-param` is
+/// mandatory for outbound media: the CDN upload response carries the download
+/// parameter there, and without this entry `package:http`'s browser client
+/// cannot see it (the header is filtered out by CORS).
+const _exposeHeaders = 'x-encrypted-param, x-error-message';
 
 const _corsHeaders = <String, String>{
   'Access-Control-Allow-Origin': '*',
@@ -59,7 +68,8 @@ const _corsHeaders = <String, String>{
   // `ClientException: Failed to fetch` before the request is ever sent).
   'Access-Control-Allow-Headers':
       'Content-Type, Authorization, AuthorizationType, '
-          'X-WECHAT-UIN, iLink-App-Id, iLink-App-ClientVersion',
+          'X-WECHAT-UIN, iLink-App-Id, iLink-App-ClientVersion, SKRouteTag',
+  'Access-Control-Expose-Headers': _exposeHeaders,
   'Access-Control-Max-Age': '86400',
 };
 
@@ -162,6 +172,13 @@ Future<void> main() async {
       final headers = <String, String>{..._corsHeaders};
       final ct = streamed.headers['content-type'];
       if (ct != null) headers['content-type'] = ct;
+      // Outbound media needs the CDN's own response headers: the upload result
+      // arrives as `x-encrypted-param`, errors as `x-error-message`. Without
+      // forwarding them the browser client cannot complete an upload.
+      for (final name in const ['x-encrypted-param', 'x-error-message']) {
+        final value = streamed.headers[name];
+        if (value != null) headers[name] = value;
+      }
 
       return Response(streamed.statusCode, body: respBytes, headers: headers);
     } catch (e) {

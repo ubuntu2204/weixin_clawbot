@@ -42,13 +42,90 @@ class AccountStore {
 
   /// Saves [account] to persistent storage, overwriting any existing entry
   /// with the same [ClawBotAccount.id].
+  ///
+  /// The official `saveWeixinAccount()` refreshes `savedAt` whenever a token is
+  /// stored, so [botTokenList] orders tokens by most-recent login; the same
+  /// stamp is applied here.
   Future<void> save(ClawBotAccount account) async {
     final all = await loadAll();
+    final stamped = account.token.isNotEmpty
+        ? account.copyWith(savedAtMs: DateTime.now().millisecondsSinceEpoch)
+        : account;
     final updated = {
       for (final a in all) a.id: a,
-      account.id: account,
+      stamped.id: stamped,
     };
     await _persist(updated.values.toList());
+  }
+
+  // ── Re-bind (换绑) helpers, official `accounts.ts` ───────────────────────
+
+  /// Number of bot tokens `get_bot_qrcode` may carry as `local_token_list`.
+  /// The official plugin sends at most the ten most recent ones.
+  static const int maxLocalTokenList = 10;
+
+  /// The locally-known bot tokens, **newest first**, capped at [max].
+  ///
+  /// Mirrors the official `getLocalBotTokenList()`. Accounts without a stored
+  /// token are skipped.
+  Future<List<String>> botTokenList({int max = maxLocalTokenList}) async {
+    final all = await loadAll();
+    // Newest first; legacy entries without a timestamp sort last.
+    final sorted = [...all]
+      ..sort((a, b) => (b.savedAtMs ?? 0).compareTo(a.savedAtMs ?? 0));
+    return sorted
+        .where((a) => a.token.isNotEmpty)
+        .map((a) => a.token)
+        .take(max)
+        .toList();
+  }
+
+  /// Removes every stored account bound to the same WeChat user as the freshly
+  /// confirmed [account], keeping [account] itself.
+  ///
+  /// This is the official re-binding rule (`clearStaleAccountsForUserId`):
+  /// a WeChat user is only ever tracked once per client, which prevents
+  /// ambiguous `context_token` matches across the stale and the new bot.
+  /// Returns the IDs that were removed.
+  Future<List<String>> removeStaleForWechatUser({
+    required String keepAccountId,
+    required String? wechatUserId,
+  }) async {
+    final userId = wechatUserId?.trim();
+    if (userId == null || userId.isEmpty) return const [];
+
+    final all = await loadAll();
+    final stale = <String>[];
+    for (final a in all) {
+      if (a.id == keepAccountId) continue;
+      if (a.defaultTo?.trim() == userId) stale.add(a.id);
+    }
+    if (stale.isEmpty) return const [];
+
+    await _persist(all.where((a) => !stale.contains(a.id)).toList());
+    return stale;
+  }
+
+  /// Drops the cached `context_token` of [accountId] without removing the
+  /// account itself (official `clearContextTokensForAccount`).
+  Future<void> clearContextToken(String accountId) async {
+    final all = await loadAll();
+    final hit = all.any((a) => a.id == accountId);
+    if (!hit) return;
+    await _persist([
+      for (final a in all)
+        if (a.id == accountId)
+          ClawBotAccount(
+            id: a.id,
+            token: a.token,
+            baseUrl: a.baseUrl,
+            botId: a.botId,
+            defaultTo: a.defaultTo,
+            savedAtMs: a.savedAtMs,
+          )
+        else
+          a,
+    ]);
   }
 
   /// Updates only the [contextToken] and optionally [defaultTo] for the
@@ -117,7 +194,6 @@ class AccountStore {
   // ── Internal ──────────────────────────────────────────────────────────────
 
   Future<void> _persist(List<ClawBotAccount> accounts) async {
-    await storage
-        .write(accounts.map((a) => jsonEncode(a.toJson())).toList());
+    await storage.write(accounts.map((a) => jsonEncode(a.toJson())).toList());
   }
 }

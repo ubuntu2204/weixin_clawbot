@@ -12,11 +12,25 @@ import 'client.dart';
 import 'message_poller.dart';
 import 'models.dart';
 import 'qr_login.dart';
+import 'session_guard.dart';
 
 /// Entry point for the weixin_clawbot package.
 ///
 /// One instance typically lives for the duration of the app. Re-use the same
 /// instance to share the underlying HTTP client and account cache.
+///
+/// ## Lifecycle, mirroring the official plugin
+///
+/// | Official (`src/channel.ts`)                        | Here                          |
+/// | -------------------------------------------------- | ----------------------------- |
+/// | `gateway.startAccount` → `notifyStart`             | [connect]                     |
+/// | `gateway.stopAccount` → `notifyStop`               | [disconnect] / [unbind]       |
+/// | `auth.login` → `saveWeixinAccount` and            | [startQrLoginSession] (auto)  |
+/// | `clearStaleAccountsForUserId` (re-bind)           |                              |
+///
+/// Note that the iLink protocol exposes **no server-side unbind endpoint**;
+/// [unbind] therefore performs the official logout: `notifyStop` plus removal
+/// of the locally stored credentials.
 class WeixinClawbot {
   final AccountStore _store;
   final http.Client? _httpClient;
@@ -29,17 +43,34 @@ class WeixinClawbot {
   /// example project) which forwards requests to the real iLink endpoint, then
   /// pass `proxyBaseUrl: 'http://localhost:3001'` here.
   ///
-  /// When set, CDN media downloads are also routed through the proxy at
-  /// `<proxyBaseUrl>/cdn` (the proxy forwards that prefix to the WeChat CDN);
-  /// on native platforms the CDN is contacted directly.
+  /// When set, CDN media (download **and** upload) are also routed through the
+  /// proxy at `<proxyBaseUrl>/cdn`; on native platforms the CDN is contacted
+  /// directly.
   final String? proxyBaseUrl;
 
   /// Base URL of the WeChat CDN for inbound media. Usually left `null` to use
   /// [defaultCdnBaseUrl] (`https://novac2c.cdn.weixin.qq.com/c2c`).
   final String? cdnBaseUrl;
 
+  /// `base_info.bot_agent` — a UA-style, observability-only identifier sent
+  /// with every authenticated request. Sanitized per the official grammar;
+  /// invalid declarations fall back to `OpenClaw`.
+  final String? botAgent;
+
+  /// Optional `SKRouteTag` routing header used by some deployments.
+  final String? skRouteTag;
+
+  /// `base_info.channel_version` / `iLink-App-ClientVersion` source version.
+  final String channelVersion;
+
+  /// Per-account session cooldown state (-14 handling).
+  final SessionGuard sessionGuard;
+
   /// Active pollers keyed by account ID.
   final _pollers = <String, MessagePoller>{};
+
+  /// Media uploaders keyed by account ID (each owns its account's client).
+  final _uploaders = <String, CdnMediaUploader>{};
 
   /// Media downloader for inbound CDN-backed items (images/files/videos).
   ///
@@ -57,8 +88,16 @@ class WeixinClawbot {
     http.Client? httpClient,
     this.proxyBaseUrl,
     this.cdnBaseUrl,
+    this.botAgent,
+    this.skRouteTag,
+    this.channelVersion = defaultChannelVersion,
+    SessionGuard? sessionGuard,
   })  : _store = store ?? AccountStore.instance,
-        _httpClient = httpClient;
+        _httpClient = httpClient,
+        sessionGuard = sessionGuard ?? SessionGuard.shared;
+
+  /// The account store backing this instance.
+  AccountStore get store => _store;
 
   /// CDN base URL actually used: through the web proxy when one is set,
   /// otherwise directly (or the custom [cdnBaseUrl]).
@@ -90,19 +129,55 @@ class WeixinClawbot {
   /// Returns all persisted accounts.
   Future<List<ClawBotAccount>> loadAllAccounts() => _store.loadAll();
 
-  /// Removes a persisted account and stops any active poller for it.
-  Future<void> logout({String? accountId}) async {
+  /// Un-binds an account: the official logout.
+  ///
+  /// The iLink protocol has **no unbind endpoint** (the official plugin only
+  /// deletes local credentials — `clearWeixinAccount` +
+  /// `unregisterWeixinAccountId`). This method therefore:
+  ///
+  /// 1. stops the long-poll loop,
+  /// 2. sends `POST /ilink/bot/msg/notifystop` so the backend stops投递 (the
+  ///    closest server-side signal available; failures are ignored, exactly
+  ///    like the official `stopAccount`),
+  /// 3. deletes the locally stored credentials and context token,
+  /// 4. clears any -14 session cooldown for the account.
+  ///
+  /// The WeChat-side authorization itself is managed in WeChat ("已连接的设备/
+  /// 服务" settings); no API here can revoke it.
+  ///
+  /// Pass no [accountId] to un-bind **every** stored account.
+  /// Returns the account IDs that were removed.
+  Future<List<String>> unbind({String? accountId}) async {
+    final targets = <ClawBotAccount>[];
     if (accountId != null) {
-      await _store.remove(accountId);
-      _pollers.remove(accountId)?.stop();
+      final stored = await _store.load(accountId);
+      if (stored != null) targets.add(stored);
     } else {
-      final all = await _store.loadAll();
-      for (final a in all) {
-        _pollers.remove(a.id)?.stop();
+      targets.addAll(await _store.loadAll());
+    }
+
+    final removed = <String>[];
+    for (final account in targets) {
+      _pollers.remove(account.id)?.stop();
+      await _notifyStopQuietly(account);
+      if (account.contextToken?.isNotEmpty == true) {
+        await _store.clearContextToken(account.id);
       }
+      await _store.remove(account.id);
+      sessionGuard.resume(account.id);
+      removed.add(account.id);
+    }
+    if (accountId == null && targets.isEmpty) {
+      // Nothing stored — still honour the "clear everything" contract.
       await _store.clear();
     }
+    return removed;
   }
+
+  /// Legacy name for [unbind]; kept as a thin alias.
+  @Deprecated(
+      'Use unbind() — it also sends notifyStop like the official logout')
+  Future<void> logout({String? accountId}) => unbind(accountId: accountId);
 
   // ── QR Login ─────────────────────────────────────────────────────────────
 
@@ -114,7 +189,7 @@ class WeixinClawbot {
         !host.endsWith('.ilinkai.weixin.qq.com')) {
       return null;
     }
-    if (proxyBaseUrl != null && proxyBaseUrl!.isNotEmpty) {
+    if (_hasProxy) {
       return '${proxyBaseUrl!.replaceAll(RegExp(r'/+$'), '')}/redirect/$host';
     }
     return 'https://$host';
@@ -126,29 +201,33 @@ class WeixinClawbot {
   /// [QrVerifyCodeRequiredEvent] (the pairing number shown on the phone)
   /// via [QrLoginSession.submitVerifyCode].
   ///
-  /// With [allowRebind] the flow supports re-binding an already-bound WeChat
-  /// user to a NEW bot (account hand-over); see [QrLoginFlow.allowRebind].
+  /// Behaviour matches the official `openclaw channels login`:
+  /// - `get_bot_qrcode` carries the ten most recent local bot tokens, so the
+  ///   server can answer `binded_redirect` when the scanned bot is already
+  ///   bound to this client ([QrAlreadyConnectedEvent] — a success, not an
+  ///   error);
+  /// - QR codes refresh automatically up to [maxQrRefreshCount] times;
+  /// - on [QrConfirmedEvent] the credentials are persisted **and** every other
+  ///   stored account of the same WeChat user is pruned — this is how a WeChat
+  ///   user re-binds (换绑) to a new bot, mirroring the official
+  ///   `clearStaleAccountsForUserId`.
   Future<QrLoginSession> startQrLoginSession({
     String? baseUrl,
     Duration pollInterval = const Duration(seconds: 1),
-    Duration loginTimeout = const Duration(minutes: 8),
-    bool allowRebind = false,
+    Duration loginTimeout = defaultLoginTimeout,
+    int maxRefreshCount = maxQrRefreshCount,
   }) async {
     final client = _makeClient(baseUrl: baseUrl, token: '');
-    // Pass locally-known bot tokens so the server can answer `binded_redirect`
-    // when the scanned bot is already bound (mirrors the official plugin).
-    // In re-bind mode the list is omitted inside the flow (new bot instead).
-    final accounts = await _store.loadAll();
+    // Locally-known bot tokens (max 10, newest first) so the server can
+    // answer `binded_redirect` — identical to `getLocalBotTokenList()`.
+    final localTokenList = await _store.botTokenList();
     final flow = QrLoginFlow(
       client: client,
       pollInterval: pollInterval,
       loginTimeout: loginTimeout,
-      localTokenList: [
-        for (final a in accounts)
-          if (a.token.isNotEmpty) a.token,
-      ],
+      localTokenList: localTokenList,
       redirectBaseUrlResolver: _resolveRedirectBaseUrl,
-      allowRebind: allowRebind,
+      maxRefreshCount: maxRefreshCount,
     );
 
     final controller = StreamController<QrLoginEvent>.broadcast();
@@ -161,6 +240,18 @@ class WeixinClawbot {
             if (!controller.isClosed) controller.add(event);
             if (event is QrConfirmedEvent) {
               await _store.save(event.account);
+              // 换绑: a WeChat user is tracked once per client. Drop the older
+              // accounts bound to the same WeChat user.
+              final removed = await _store.removeStaleForWechatUser(
+                keepAccountId: event.account.id,
+                wechatUserId: event.account.defaultTo,
+              );
+              for (final id in removed) {
+                _pollers.remove(id)?.stop();
+                sessionGuard.resume(id);
+              }
+              // A fresh token invalidates any earlier -14 cooldown.
+              sessionGuard.resume(event.account.id);
             }
           },
           onError: controller.addError,
@@ -175,8 +266,8 @@ class WeixinClawbot {
   /// Returns a stream of [QrLoginEvent]s for the QR-code WeChat binding flow.
   ///
   /// Listen to the stream and display [QrReadyEvent.qrContent] as a QR image.
-  /// On [QrConfirmedEvent] the account is automatically persisted and can be
-  /// used with [connect].
+  /// On [QrConfirmedEvent] the account is persisted (and older accounts of the
+  /// same WeChat user are pruned), so it can be used with [connect].
   ///
   /// If the server asks for a pairing number ([QrVerifyCodeRequiredEvent]),
   /// use [startQrLoginSession] instead so the code can be submitted back.
@@ -191,14 +282,14 @@ class WeixinClawbot {
   Stream<QrLoginEvent> startQrLogin({
     String? baseUrl,
     Duration pollInterval = const Duration(seconds: 1),
-    Duration loginTimeout = const Duration(minutes: 8),
-    bool allowRebind = false,
+    Duration loginTimeout = defaultLoginTimeout,
+    int maxRefreshCount = maxQrRefreshCount,
   }) async* {
     final session = await startQrLoginSession(
       baseUrl: baseUrl,
       pollInterval: pollInterval,
       loginTimeout: loginTimeout,
-      allowRebind: allowRebind,
+      maxRefreshCount: maxRefreshCount,
     );
     yield* session.events;
   }
@@ -215,6 +306,9 @@ class WeixinClawbot {
   /// reused, so multiple widgets can each call [connect] independently.
   ///
   /// Side effects:
+  /// - `POST /ilink/bot/msg/notifystart` is sent once when the poller starts,
+  ///   like the official `startAccount`. Failures are logged and never block
+  ///   the connection.
   /// - Incoming `context_token` values are automatically persisted to
   ///   [AccountStore] so they survive app restarts.
   /// - The first sender's user ID is stored as [MessagePoller.defaultPeer].
@@ -224,8 +318,15 @@ class WeixinClawbot {
       return _pollers[account.id]!.start();
     }
     final client = _makeClient(baseUrl: account.baseUrl, token: account.token);
-    final poller = MessagePoller(client: client, account: account);
+    final poller = MessagePoller(
+      client: client,
+      account: account,
+      sessionGuard: sessionGuard,
+    );
     _pollers[account.id] = poller;
+
+    // Official startAccount: notify the backend, ignore failures.
+    unawaited(_notifyStartQuietly(account));
 
     // Attach an internal listener that persists context tokens as they arrive.
     // poller.start() is idempotent: the second call below returns the same
@@ -248,10 +349,47 @@ class WeixinClawbot {
   /// Returns the [MessagePoller] for [accountId], or `null` if not connected.
   MessagePoller? pollerFor(String accountId) => _pollers[accountId];
 
-  /// Stops the poller for [accountId].
-  void disconnect(String accountId) {
+  /// Stops the poller for [accountId] and notifies the backend
+  /// (`notifyStop`), mirroring the official `stopAccount`.
+  ///
+  /// Credentials stay stored — the account can be [connect]ed again later. Use
+  /// [unbind] to also delete them.
+  Future<void> disconnect(String accountId, {bool notify = true}) async {
     _pollers.remove(accountId)?.stop();
+    final uploader = _uploaders.remove(accountId);
+    uploader?.dispose();
+    if (!notify) return;
+    final account = await _store.load(accountId);
+    if (account != null) await _notifyStopQuietly(account);
   }
+
+  /// `true` while [accountId] is inside the one-hour cooldown triggered by a
+  /// stale bot token (errcode `-14`).
+  bool isSessionPaused(String accountId) => sessionGuard.isPaused(accountId);
+
+  /// Remaining cooldown for [accountId] after a `-14` (zero when active).
+  Duration sessionPauseRemaining(String accountId) =>
+      sessionGuard.remaining(accountId);
+
+  /// Shows or hides the WeChat "typing…" indicator for [userId] on
+  /// [accountId]'s conversation. No-op when the account is not connected.
+  Future<bool> setTyping(
+    String userId, {
+    String? accountId,
+    TypingStatus status = TypingStatus.typing,
+  }) async {
+    final poller = _resolvePoller(accountId);
+    if (poller == null) return false;
+    return poller.setTyping(userId, status: status);
+  }
+
+  /// Convenience wrapper around [setTyping] with [TypingStatus.typing].
+  Future<bool> showTyping(String userId, {String? accountId}) =>
+      setTyping(userId, accountId: accountId, status: TypingStatus.typing);
+
+  /// Convenience wrapper around [setTyping] with [TypingStatus.cancel].
+  Future<bool> cancelTyping(String userId, {String? accountId}) =>
+      setTyping(userId, accountId: accountId, status: TypingStatus.cancel);
 
   /// Sends a plain-text message.
   ///
@@ -272,9 +410,9 @@ class WeixinClawbot {
     required String text,
     String? toUserId,
     String? accountId,
+    String? runId,
   }) async {
-    final poller =
-        accountId != null ? _pollers[accountId] : _pollers.values.firstOrNull;
+    final poller = _resolvePoller(accountId);
 
     if (poller == null) {
       return const SendResult(
@@ -295,8 +433,157 @@ class WeixinClawbot {
       );
     }
 
-    return poller.replyText(toUserId: to, text: text);
+    return poller.replyText(toUserId: to, text: text, runId: runId);
   }
+
+  /// Sends an image ([UploadMediaType.image]) to [toUserId].
+  ///
+  /// Uploads [bytes] to the WeChat CDN (AES-128-ECB + PKCS#7, `no_need_thumb`)
+  /// and then sends a single `image_item` message — the same two-step flow the
+  /// official plugin uses. Captions are sent as a **separate** text message,
+  /// because the official sender emits one request per item.
+  Future<SendResult> sendImage({
+    required Uint8List bytes,
+    String? toUserId,
+    String? accountId,
+    String? caption,
+  }) =>
+      _sendMedia(
+        bytes: bytes,
+        mediaType: UploadMediaType.image,
+        toUserId: toUserId,
+        accountId: accountId,
+        caption: caption,
+        buildItem: (uploaded) => MessageItem.image(
+          encryptQueryParam: uploaded.downloadEncryptQueryParam,
+          aesKeyHex: uploaded.aesKeyHex,
+          midSize: uploaded.ciphertextSize,
+        ),
+      );
+
+  /// Sends a video ([UploadMediaType.video]) to [toUserId].
+  Future<SendResult> sendVideo({
+    required Uint8List bytes,
+    String? toUserId,
+    String? accountId,
+    String? caption,
+  }) =>
+      _sendMedia(
+        bytes: bytes,
+        mediaType: UploadMediaType.video,
+        toUserId: toUserId,
+        accountId: accountId,
+        caption: caption,
+        buildItem: (uploaded) => MessageItem.video(
+          encryptQueryParam: uploaded.downloadEncryptQueryParam,
+          aesKeyHex: uploaded.aesKeyHex,
+          videoSize: uploaded.ciphertextSize,
+          videoMd5: uploaded.rawMd5,
+        ),
+      );
+
+  /// Sends a file attachment ([UploadMediaType.file]) to [toUserId].
+  ///
+  /// [fileName] is required so the recipient can display the attachment.
+  Future<SendResult> sendFile({
+    required Uint8List bytes,
+    required String fileName,
+    String? toUserId,
+    String? accountId,
+    String? caption,
+  }) =>
+      _sendMedia(
+        bytes: bytes,
+        mediaType: UploadMediaType.file,
+        toUserId: toUserId,
+        accountId: accountId,
+        caption: caption,
+        buildItem: (uploaded) => MessageItem.file(
+          encryptQueryParam: uploaded.downloadEncryptQueryParam,
+          aesKeyHex: uploaded.aesKeyHex,
+          fileName: fileName,
+          rawSize: uploaded.rawSize,
+          md5: uploaded.rawMd5,
+        ),
+      );
+
+  Future<SendResult> _sendMedia({
+    required Uint8List bytes,
+    required UploadMediaType mediaType,
+    required MessageItem Function(UploadedMedia) buildItem,
+    String? toUserId,
+    String? accountId,
+    String? caption,
+  }) async {
+    final poller = _resolvePoller(accountId);
+    if (poller == null) {
+      return const SendResult(
+        ok: false,
+        to: '',
+        clientId: '',
+        error: 'No active connection – call connect() first',
+      );
+    }
+    final to = toUserId ?? poller.defaultPeer;
+    if (to == null || to.isEmpty) {
+      return const SendResult(
+        ok: false,
+        to: '',
+        clientId: '',
+        error: 'No recipient – provide toUserId or wait for an inbound message',
+      );
+    }
+
+    final account = poller.account;
+    if (sessionGuard.isPaused(account.id)) {
+      final minutes =
+          (sessionGuard.remaining(account.id).inMilliseconds / 60000).ceil();
+      return SendResult(
+        ok: false,
+        to: to,
+        clientId: '',
+        error:
+            'Session paused for $minutes min (stale bot token, re-login needed)',
+      );
+    }
+
+    try {
+      final uploaded = await _uploaderFor(account)
+          .upload(bytes: bytes, mediaType: mediaType, toUserId: to);
+      final item = buildItem(uploaded);
+      // Official behaviour: caption and media are separate requests, each with
+      // its own client_id; the media goes last.
+      if (caption != null && caption.isNotEmpty) {
+        await poller
+            .replyItems(toUserId: to, items: [MessageItem.text(caption)]);
+      }
+      return await poller.replyItems(toUserId: to, items: [item]);
+    } on CdnUploadException catch (e) {
+      return SendResult(ok: false, to: to, clientId: '', error: e.message);
+    } on ILinkApiException catch (e) {
+      return SendResult(ok: false, to: to, clientId: '', error: e.message);
+    } catch (e) {
+      return SendResult(ok: false, to: to, clientId: '', error: '$e');
+    }
+  }
+
+  /// CDN uploader bound to [account]'s API client (created on first use).
+  CdnMediaUploader _uploaderFor(ClawBotAccount account) {
+    final existing = _uploaders[account.id];
+    if (existing != null) return existing;
+    final client = _makeClient(baseUrl: account.baseUrl, token: account.token);
+    final uploader = CdnMediaUploader(
+      client: client,
+      cdnBaseUrl: _resolvedCdnBaseUrl,
+      httpClient: _httpClient,
+      uploadUrlRewriter: _hasProxy ? _rewriteFullUrlThroughProxy : null,
+    );
+    _uploaders[account.id] = uploader;
+    return uploader;
+  }
+
+  MessagePoller? _resolvePoller(String? accountId) =>
+      accountId != null ? _pollers[accountId] : _pollers.values.firstOrNull;
 
   // ── Inbound media ────────────────────────────────────────────────────────
 
@@ -314,6 +601,28 @@ class WeixinClawbot {
   Future<Uint8List> downloadMedia(CdnMedia media, {Uint8List? aesKeyBytes}) =>
       this.media.downloadMedia(media, aesKeyBytes: aesKeyBytes);
 
+  /// Downloads and decrypts a voice / file / video item's CDN payload.
+  ///
+  /// These item types carry their key only inside `media.aes_key` (base64);
+  /// when it is absent the payload is returned as-is, mirroring the official
+  /// media downloader, which skips decryption for keyless items.
+  Future<Uint8List> downloadVoice(VoiceItemData voice) =>
+      _downloadWithMediaKey(voice.media);
+
+  /// Downloads and decrypts a file attachment payload.
+  Future<Uint8List> downloadFile(FileItemData file) =>
+      _downloadWithMediaKey(file.media);
+
+  /// Downloads and decrypts a video payload.
+  Future<Uint8List> downloadVideo(VideoItemData video) =>
+      _downloadWithMediaKey(video.media);
+
+  Future<Uint8List> _downloadWithMediaKey(CdnMedia? cdnMedia) =>
+      media.downloadMedia(
+        cdnMedia ?? const CdnMedia(),
+        aesKeyBytes: resolveMediaAesKeyBytes(cdnMedia),
+      );
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   ILinkClient _makeClient({required String? baseUrl, required String token}) {
@@ -321,15 +630,65 @@ class WeixinClawbot {
       baseUrl: proxyBaseUrl ?? baseUrl,
       token: token,
       httpClient: _httpClient,
+      channelVersion: channelVersion,
+      botAgent: botAgent,
+      skRouteTag: skRouteTag,
     );
   }
 
+  /// Official `startAccount`: failures are logged as warnings and never block
+  /// the channel from starting.
+  Future<void> _notifyStartQuietly(ClawBotAccount account) async {
+    try {
+      final client =
+          _makeClient(baseUrl: account.baseUrl, token: account.token);
+      final resp = await client.notifyStart();
+      if (!resp.isOk) {
+        _log('notifyStart ret=${resp.ret} ${resp.errMsg}');
+      }
+    } catch (e) {
+      _log('notifyStart failed during startup (ignored): $e');
+    }
+  }
+
+  /// Official `stopAccount`: skipped without a token, failures ignored.
+  Future<void> _notifyStopQuietly(ClawBotAccount account) async {
+    if (account.token.trim().isEmpty) return;
+    try {
+      final client =
+          _makeClient(baseUrl: account.baseUrl, token: account.token);
+      final resp = await client.notifyStop();
+      if (!resp.isOk) {
+        _log('notifyStop ret=${resp.ret} ${resp.errMsg}');
+      }
+    } catch (e) {
+      _log('notifyStop failed during shutdown (ignored): $e');
+    }
+  }
+
+  static void _log(String message) {
+    // Pure-Dart console output (no Flutter dependency in the core).
+    // ignore: avoid_print
+    print('weixin_clawbot: $message');
+  }
+
   /// Stops all pollers and releases resources.
-  void dispose() {
+  ///
+  /// Sends `notifyStop` for every connected account, like the official gateway
+  /// shutdown, and waits briefly for those calls to land.
+  Future<void> dispose() async {
+    final accounts = [for (final p in _pollers.values) p.account];
     for (final poller in _pollers.values) {
       poller.stop();
     }
     _pollers.clear();
+    for (final account in accounts) {
+      await _notifyStopQuietly(account);
+    }
+    for (final uploader in _uploaders.values) {
+      uploader.dispose();
+    }
+    _uploaders.clear();
     media.dispose();
     _httpClient?.close();
   }

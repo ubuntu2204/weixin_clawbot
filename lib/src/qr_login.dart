@@ -6,20 +6,41 @@ import 'dart:async';
 import 'client.dart';
 import 'models.dart';
 
+/// Number of QR codes the official plugin is willing to obtain before it stops
+/// the whole login flow (official `MAX_QR_REFRESH_COUNT`). The first code
+/// counts, so exactly two *refreshes* happen after it.
+const int maxQrRefreshCount = 3;
+
+/// Total time the official plugin waits for a scan (official
+/// `waitForWeixinLogin` default `timeoutMs` of 480 000 ms).
+const Duration defaultLoginTimeout = Duration(minutes: 8);
+
 /// Events emitted during the QR login flow.
+///
+/// Terminal events — after which the stream closes — are
+/// [QrConfirmedEvent], [QrAlreadyConnectedEvent], [QrTooManyQrResetsEvent],
+/// [QrLoginTimeoutEvent] and [QrErrorEvent]. Everything else is informational
+/// and the flow keeps running.
 sealed class QrLoginEvent {}
 
 /// The QR code is ready. Display [qrContent] as a QR image so the user can
 /// scan it with WeChat.
+///
+/// Emitted again after every auto-refresh ([QrExpiredEvent] /
+/// [QrVerifyCodeBlockedEvent] followed by [QrRefreshedEvent]).
 final class QrReadyEvent extends QrLoginEvent {
   /// Text content to encode into a QR image (e.g. pass to `QrImageView`).
   final String qrContent;
 
-  QrReadyEvent(this.qrContent);
+  /// 1-based QR generation counter: `1` for the first code, `2` after the
+  /// first refresh, and so on.
+  final int generation;
+
+  QrReadyEvent(this.qrContent, {this.generation = 1});
 }
 
 /// The user has scanned the QR code on their phone but has not yet tapped
-/// "Confirm" in WeChat.
+/// "Confirm" in WeChat. Emitted once per QR code.
 final class QrScannedEvent extends QrLoginEvent {
   QrScannedEvent();
 }
@@ -35,27 +56,69 @@ final class QrVerifyCodeRequiredEvent extends QrLoginEvent {
 }
 
 /// The verify code was submitted incorrectly too many times
-/// (`verify_code_blocked`). The stream closes after this event; the user
-/// should restart the login after a pause.
+/// (`verify_code_blocked`).
+///
+/// Non-terminal, unlike older releases: the official plugin clears the pending
+/// code and refreshes the QR code, so a [QrRefreshedEvent] and a new
+/// [QrReadyEvent] follow — unless the refresh budget is exhausted
+/// ([QrTooManyQrResetsEvent]).
 final class QrVerifyCodeBlockedEvent extends QrLoginEvent {
   QrVerifyCodeBlockedEvent();
 }
 
-/// The scanned bot is already bound to one of the locally-known accounts
-/// (`binded_redirect`).
+/// The QR code expired before the user scanned it.
 ///
-/// Depending on the server response the event may carry the existing binding
-/// information so callers can implement account hand-over (re-binding the
-/// same WeChat user to a different local account):
-/// - [existingAccount] is non-null when the server echoed the bound bot's
-///   credentials — the caller can use them directly (equivalent to login).
-/// - [existingWechatUserid] is the bound WeChat's iLink user ID, useful to
-///   locate the previous binding in your own user store and migrate it.
-final class QrAlreadyBoundEvent extends QrLoginEvent {
-  final ClawBotAccount? existingAccount;
-  final String? existingWechatUserid;
+/// Non-terminal, unlike older releases: the flow refreshes the code
+/// automatically until the refresh budget runs out, which surfaces as
+/// [QrTooManyQrResetsEvent].
+final class QrExpiredEvent extends QrLoginEvent {
+  QrExpiredEvent();
+}
 
-  QrAlreadyBoundEvent({this.existingAccount, this.existingWechatUserid});
+/// A fresh QR code is being fetched after an expiry or a blocked pairing code
+/// (official `⏳ 正在刷新二维码...(n/3)`).
+final class QrRefreshedEvent extends QrLoginEvent {
+  /// 1-based generation number of the code being fetched.
+  final int attempt;
+
+  /// Generation number at which the flow gives up ([maxQrRefreshCount]).
+  final int maxAttempts;
+
+  QrRefreshedEvent(this.attempt, this.maxAttempts);
+}
+
+/// The QR code expired / was blocked too often; the login flow stopped
+/// (official "二维码多次失效，连接流程已停止。").
+final class QrTooManyQrResetsEvent extends QrLoginEvent {
+  /// User-facing reason, mirroring the official CLI wording.
+  final String reason;
+
+  QrTooManyQrResetsEvent({this.reason = '二维码多次失效，连接流程已停止。请稍后再试。'});
+}
+
+/// Nobody scanned and no terminal status arrived before [QrLoginFlow.loginTimeout]
+/// elapsed (official "登录超时，请重试。").
+final class QrLoginTimeoutEvent extends QrLoginEvent {
+  QrLoginTimeoutEvent();
+}
+
+/// The scanned bot is already bound to **this** client (`binded_redirect`).
+///
+/// The official plugin treats this as a *successful* outcome
+/// (`alreadyConnected: true` — "✅ 已连接过此 OpenClaw，无需重复连接。"): local
+/// credentials stay valid, nothing is persisted and no new credentials are
+/// issued. It never reads `bot_token` from a `binded_redirect` response.
+///
+/// **Re-binding (换绑)**: the protocol has no re-bind endpoint. A WeChat user
+/// moves to a new bot by scanning that other bot; the resulting
+/// [QrConfirmedEvent] makes [AccountStore] drop the previously stored accounts
+/// of the same WeChat user, mirroring the official
+/// `clearStaleAccountsForUserId`.
+final class QrAlreadyConnectedEvent extends QrLoginEvent {
+  /// The scanning WeChat user's iLink user ID, when the server echoed it.
+  final String? wechatUserId;
+
+  QrAlreadyConnectedEvent({this.wechatUserId});
 }
 
 /// Login succeeded. The [account] object holds the bot credentials.
@@ -65,12 +128,7 @@ final class QrConfirmedEvent extends QrLoginEvent {
   QrConfirmedEvent(this.account);
 }
 
-/// The QR code expired before the user scanned it.
-final class QrExpiredEvent extends QrLoginEvent {
-  QrExpiredEvent();
-}
-
-/// An unexpected error occurred during the login flow.
+/// An unexpected error occurred during the login flow. Terminal.
 final class QrErrorEvent extends QrLoginEvent {
   final Object error;
   final StackTrace stackTrace;
@@ -79,27 +137,41 @@ final class QrErrorEvent extends QrLoginEvent {
 }
 
 /// Drives the QR-code WeChat login handshake, mirroring the official
-/// openclaw-weixin `waitForWeixinLogin` state machine:
+/// openclaw-weixin `waitForWeixinLogin` state machine
+/// (`src/auth/login-qr.ts`):
 ///
-/// - `wait` / `scaned` — keep polling.
-/// - `scaned_but_redirect` — switch the polling host to `redirect_host` (IDC).
+/// - `wait` / `scaned` — keep polling (`scaned` is announced once per code).
+/// - `scaned_but_redirect` — switch the **polling** host to `redirect_host`
+///   (IDC). QR fetches keep targeting the fixed API host, like the official
+///   `FIXED_BASE_URL` used by `fetchQRCode` / `refreshQRCode`.
 /// - `need_verifycode` — pause and wait for [submitVerifyCode], then send the
 ///   code back as `&verify_code=` on the next poll.
-/// - `verify_code_blocked` — terminal outcome.
-/// - `binded_redirect` — the WeChat user is already bound. See [allowRebind].
+/// - `expired` / `verify_code_blocked` — refresh the QR code automatically
+///   while the shared generation budget lasts, then stop.
+/// - `binded_redirect` — already connected: terminal, but a success.
 /// - `confirmed` — emit credentials and finish.
+///
+/// Transport / gateway errors while polling are converted into `wait` by
+/// [ILinkClient.pollQrStatus] and never abort the flow — only the overall
+/// [loginTimeout] or an exhausted refresh budget does.
 class QrLoginFlow {
-  ILinkClient _client;
+  /// Client pinned to the fixed API host, used for every `get_bot_qrcode`.
+  final ILinkClient _qrClient;
+
+  /// Client used for status polling; switches host on IDC redirect.
+  ILinkClient _pollClient;
 
   /// How long to wait between status polls (the poll itself long-polls on the
   /// server side, so this only applies between completed requests).
   final Duration pollInterval;
 
-  /// Total time to wait before giving up.
+  /// Total time to wait before giving up (official 480 s default).
   final Duration loginTimeout;
 
   /// Bot tokens already stored locally, passed to `get_bot_qrcode` as
-  /// `local_token_list` so the server can answer `binded_redirect`.
+  /// `local_token_list`. The official plugin sends at most the ten most
+  /// recent tokens, newest first — build it with
+  /// [AccountStore.botTokenList].
   final List<String> localTokenList;
 
   /// Builds the polling base URL for an IDC redirect host. Return `null` to
@@ -107,31 +179,24 @@ class QrLoginFlow {
   /// proxy-prefixed URL on Flutter Web.
   final String? Function(String redirectHost)? redirectBaseUrlResolver;
 
-  /// Enables **re-binding** (account hand-over) for an already-bound WeChat
-  /// user. When `true`:
-  ///
-  /// 1. `get_bot_qrcode` is sent **without** `local_token_list`, so the server
-  ///    issues a *new* bot for the scanning WeChat user instead of answering
-  ///    `binded_redirect` — one scan completes the re-bind.
-  /// 2. If the server still answers `binded_redirect` and echoes the existing
-  ///    bot credentials, they are emitted as [QrConfirmedEvent] (taking over
-  ///    the existing binding).
-  /// 3. Otherwise a [QrAlreadyBoundEvent] is emitted once and a fresh QR code
-  ///    (without the token list) is fetched automatically so the user can
-  ///    scan a second time to create the new binding.
-  final bool allowRebind;
+  /// Maximum number of QR codes (first one included) before the flow stops.
+  final int maxRefreshCount;
 
   Completer<String>? _verifyCodeCompleter;
   String? _pendingVerifyCode;
 
+  /// How many QR codes have been fetched so far (official `qrRefreshCount`).
+  int _qrGeneration = 0;
+
   QrLoginFlow({
     required ILinkClient client,
     this.pollInterval = const Duration(seconds: 1),
-    this.loginTimeout = const Duration(minutes: 8),
+    this.loginTimeout = defaultLoginTimeout,
     this.localTokenList = const [],
     this.redirectBaseUrlResolver,
-    this.allowRebind = false,
-  }) : _client = client;
+    this.maxRefreshCount = maxQrRefreshCount,
+  })  : _qrClient = client,
+        _pollClient = client;
 
   /// Supplies the pairing number shown on the phone after a
   /// [QrVerifyCodeRequiredEvent].
@@ -143,61 +208,35 @@ class QrLoginFlow {
   }
 
   /// Starts the login handshake and returns a stream of events.
-  ///
-  /// The stream closes after a [QrConfirmedEvent], [QrExpiredEvent],
-  /// [QrVerifyCodeBlockedEvent], [QrAlreadyBoundEvent], or [QrErrorEvent].
   Stream<QrLoginEvent> startLogin() {
     final controller = StreamController<QrLoginEvent>();
-    _runLogin(controller).then((_) {
+    _runLogin(controller).whenComplete(() {
       if (!controller.isClosed) controller.close();
     });
     return controller.stream;
   }
 
   Future<void> _runLogin(StreamController<QrLoginEvent> sink) async {
+    // `scaned` is announced once per QR code (official `scannedPrinted`).
+    var scannedEmitted = false;
+    var verifyCodeIsRetry = false;
+
     try {
-      // Step 1 – fetch QR code. In re-bind mode the local token list is
-      // omitted so the server creates a NEW bot for the scanning WeChat user
-      // (one scan completes the hand-over) instead of answering
-      // `binded_redirect`.
-      var qrResp = await _client.fetchLoginQrCode(
-        localTokenList: allowRebind ? const [] : localTokenList,
-      );
-      if (qrResp.qrCodeImgContent.isEmpty) {
-        sink.addError(
-          const ILinkApiException('Empty qrcode_img_content from server'),
-        );
-        return;
-      }
+      final first = await _fetchQr(sink);
+      if (first == null) return; // the failure was already reported
+      QrCodeResponse qrResp = first;
 
-      sink.add(QrReadyEvent(qrResp.qrCodeImgContent));
-
-      // Step 2 – poll until confirmed / expired / terminal state / timeout
-      var deadline = DateTime.now().add(loginTimeout);
-      var consecutiveErrors = 0;
-      var verifyCodeIsRetry = false;
-      var rebindAttempted = false;
+      final deadline = DateTime.now().add(loginTimeout);
 
       while (DateTime.now().isBefore(deadline)) {
-        QrStatusResponse status;
+        final QrStatusResponse status;
         try {
-          status = await _client.pollQrStatus(
+          status = await _pollClient.pollQrStatus(
             qrResp.qrCode,
             verifyCode: _pendingVerifyCode,
           );
-          _pendingVerifyCode = null;
-          consecutiveErrors = 0;
         } on TimeoutException {
           // Server-side long poll elapsed; restart immediately.
-          continue;
-        } on ILinkApiException catch (e) {
-          // Transient gateway errors should not kill the login. Give up only
-          // after several consecutive failures.
-          if (++consecutiveErrors >= 3) {
-            sink.addError(e);
-            return;
-          }
-          await Future<void>.delayed(const Duration(seconds: 2));
           continue;
         }
 
@@ -206,7 +245,13 @@ class QrLoginFlow {
             break;
 
           case QrLoginStatus.scanned:
-            sink.add(QrScannedEvent());
+            // A code was submitted and the server accepted it: drop it so the
+            // next poll does not resend a spent value.
+            _pendingVerifyCode = null;
+            if (!scannedEmitted) {
+              scannedEmitted = true;
+              sink.add(QrScannedEvent());
+            }
 
           case QrLoginStatus.scanedButRedirect:
             // IDC redirect: continue polling on the new host. The resolver
@@ -217,63 +262,46 @@ class QrLoginFlow {
                   ? redirectBaseUrlResolver!(host)
                   : 'https://$host';
               if (resolved != null) {
-                _client = _client.rebase(resolved);
+                _pollClient = _pollClient.rebase(resolved);
               }
             }
 
           case QrLoginStatus.needVerifyCode:
             // The phone shows a pairing number; pause polling until the user
             // submits it. Passing the code on the next poll resumes the flow.
-            _pendingVerifyCode = await _requestVerifyCode(sink, verifyCodeIsRetry);
+            _pendingVerifyCode =
+                await _requestVerifyCode(sink, verifyCodeIsRetry);
             verifyCodeIsRetry = true;
-            continue;
+            continue; // resume polling without the usual interval wait
 
           case QrLoginStatus.verifyCodeBlocked:
             sink.add(QrVerifyCodeBlockedEvent());
-            return;
+            _pendingVerifyCode = null;
+            final refreshed = await _refreshQr(
+              sink,
+              reason: '多次输入错误，连接流程已停止。请稍后再试。',
+            );
+            if (refreshed == null) return;
+            qrResp = refreshed;
+            scannedEmitted = false;
+            continue;
 
           case QrLoginStatus.bindedRedirect:
-            // The WeChat user is already bound to a bot.
-            final existing = _accountFromStatus(status);
-            if (existing != null) {
-              // The server echoed the existing bot credentials: taking over
-              // the existing binding is equivalent to a successful login.
-              sink.add(QrConfirmedEvent(existing));
-              return;
-            }
-            if (allowRebind && !rebindAttempted) {
-              // No credentials echoed and re-bind is allowed: surface the
-              // already-bound notice (with the WeChat user id when available)
-              // and automatically fetch a fresh QR code WITHOUT the local
-              // token list, asking the server for a new bot. The user scans
-              // a second time to complete the hand-over.
-              rebindAttempted = true;
-              sink.add(QrAlreadyBoundEvent(
-                existingWechatUserid: status.ilinkUserId,
-              ));
-              qrResp = await _client.fetchLoginQrCode(localTokenList: const []);
-              if (qrResp.qrCodeImgContent.isEmpty) {
-                sink.addError(const ILinkApiException(
-                  'Empty qrcode_img_content from server (re-bind retry)',
-                ));
-                return;
-              }
-              sink.add(QrReadyEvent(qrResp.qrCodeImgContent));
-              deadline = DateTime.now().add(loginTimeout);
-              consecutiveErrors = 0;
-              await Future<void>.delayed(pollInterval);
-              continue;
-            }
-            sink.add(QrAlreadyBoundEvent(
-              existingWechatUserid: status.ilinkUserId,
+            // Already connected to this client: no new credentials are issued
+            // and the stored ones stay valid. Terminal, and successful.
+            sink.add(QrAlreadyConnectedEvent(
+              wechatUserId: status.ilinkUserId,
             ));
             return;
 
           case QrLoginStatus.confirmed:
             final account = _accountFromStatus(status);
             if (account == null) {
-              sink.addError(const ILinkApiException(
-                'Login confirmed but bot_token or ilink_bot_id is missing',
+              sink.add(QrErrorEvent(
+                const ILinkApiException(
+                  'Login confirmed but bot_token or ilink_bot_id is missing',
+                ),
+                StackTrace.current,
               ));
               return;
             }
@@ -282,7 +310,14 @@ class QrLoginFlow {
 
           case QrLoginStatus.expired:
             sink.add(QrExpiredEvent());
-            return;
+            final refreshed = await _refreshQr(
+              sink,
+              reason: '二维码多次失效，连接流程已停止。请稍后再试。',
+            );
+            if (refreshed == null) return;
+            qrResp = refreshed;
+            scannedEmitted = false;
+            continue;
 
           case QrLoginStatus.unknown:
             // Ignore and keep polling.
@@ -292,15 +327,50 @@ class QrLoginFlow {
         await Future<void>.delayed(pollInterval);
       }
 
-      // Timed out
-      sink.add(QrExpiredEvent());
+      sink.add(QrLoginTimeoutEvent());
     } catch (e, st) {
       sink.add(QrErrorEvent(e, st));
     }
   }
 
-  /// Builds a [ClawBotAccount] from a poll response, or `null` when the
-  /// response does not carry complete credentials.
+  /// Fetches a QR code from the fixed API host and emits [QrReadyEvent].
+  ///
+  /// Returns `null` (after pushing [QrErrorEvent]) when the server gave no
+  /// usable content.
+  Future<QrCodeResponse?> _fetchQr(StreamController<QrLoginEvent> sink) async {
+    _qrGeneration += 1;
+    final resp = await _qrClient.fetchLoginQrCode(
+      localTokenList: localTokenList,
+    );
+    if (resp.qrCodeImgContent.isEmpty) {
+      sink.add(QrErrorEvent(
+        const ILinkApiException('Empty qrcode_img_content from server'),
+        StackTrace.current,
+      ));
+      return null;
+    }
+    sink.add(QrReadyEvent(resp.qrCodeImgContent, generation: _qrGeneration));
+    return resp;
+  }
+
+  /// Refreshes the QR code within the shared refresh budget.
+  ///
+  /// Returns the new response, or `null` when the flow must stop — a terminal
+  /// event ([QrTooManyQrResetsEvent] / [QrErrorEvent]) has then been pushed.
+  Future<QrCodeResponse?> _refreshQr(
+    StreamController<QrLoginEvent> sink, {
+    required String reason,
+  }) async {
+    if (_qrGeneration >= maxRefreshCount) {
+      sink.add(QrTooManyQrResetsEvent(reason: reason));
+      return null;
+    }
+    sink.add(QrRefreshedEvent(_qrGeneration + 1, maxRefreshCount));
+    return _fetchQr(sink);
+  }
+
+  /// Builds a [ClawBotAccount] from a `confirmed` poll response, or `null`
+  /// when the response does not carry complete credentials.
   ClawBotAccount? _accountFromStatus(QrStatusResponse status) {
     final token = status.botToken ?? '';
     final botId = status.ilinkBotId ?? '';
@@ -308,11 +378,14 @@ class QrLoginFlow {
     return ClawBotAccount(
       id: botId,
       token: token,
+      // The official client stores the server-provided `baseurl` and falls
+      // back to the default host when it is absent.
       baseUrl: status.baseUrl?.isNotEmpty == true
           ? status.baseUrl!
-          : _client.baseUrl,
+          : _qrClient.baseUrl,
       botId: botId,
       defaultTo: status.ilinkUserId,
+      savedAtMs: DateTime.now().millisecondsSinceEpoch,
     );
   }
 

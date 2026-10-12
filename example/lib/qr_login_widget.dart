@@ -10,12 +10,16 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:weixin_clawbot/weixin_clawbot.dart';
 
-
-
 /// A self-contained widget that shows the WeChat QR-code binding UI.
 ///
 /// Embed inside any screen or dialog. It handles the full flow:
-/// fetching the QR code → displaying it → polling → success / expired.
+/// fetching the QR code → displaying it → polling → auto-refresh on expiry →
+/// success / already connected / stopped.
+///
+/// The state machine mirrors the official plugin, so the UI also covers
+/// **换绑**: scanning a *different* bot re-binds the same WeChat user, and
+/// scanning an already-bound bot ends with [QrAlreadyConnectedEvent]
+/// (`binded_redirect`), which is a success rather than an error.
 ///
 /// ```dart
 /// QrLoginWidget(
@@ -32,7 +36,12 @@ class QrLoginWidget extends StatefulWidget {
   /// Called when login succeeds.
   final void Function(ClawBotAccount account)? onLoggedIn;
 
-  /// Called when the QR code expires.
+  /// Called when the server reports `binded_redirect`: this WeChat user is
+  /// already connected to this client. The dialog then has nothing to store.
+  final void Function(String? wechatUserId)? onAlreadyConnected;
+
+  /// Called when the QR code expired and no refresh budget is left
+  /// ([QrTooManyQrResetsEvent] / [QrLoginTimeoutEvent]).
   final VoidCallback? onExpired;
 
   /// Override the API base URL (optional).
@@ -41,13 +50,18 @@ class QrLoginWidget extends StatefulWidget {
   /// Size of the rendered QR image in logical pixels.
   final double qrSize;
 
+  /// Total time to wait for a scan before giving up (official default 8 min).
+  final Duration loginTimeout;
+
   const QrLoginWidget({
     super.key,
     required this.clawbot,
     this.onLoggedIn,
+    this.onAlreadyConnected,
     this.onExpired,
     this.baseUrl,
     this.qrSize = 240,
+    this.loginTimeout = defaultLoginTimeout,
   });
 
   @override
@@ -57,6 +71,14 @@ class QrLoginWidget extends StatefulWidget {
 class _QrLoginWidgetState extends State<QrLoginWidget> {
   _UiState _state = _Loading();
   QrLoginSession? _session;
+
+  /// Generation of the QR code currently on screen, used to key the image so
+  /// a refreshed code always re-renders.
+  int _generation = 0;
+
+  /// 当前刷新提示文案（`正在刷新二维码…(n/3)`），在下一次 [QrReadyEvent]
+  /// 到达时显示在二维码下方。
+  String? _refreshNote;
 
   @override
   void initState() {
@@ -71,10 +93,17 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
   }
 
   Future<void> _startLogin() async {
-    setState(() => _state = _Loading());
+    setState(() {
+      _state = _Loading();
+      _refreshNote = null;
+      _generation = 0;
+    });
 
+    // Close any previous session before starting a new one.
+    _session?.dispose();
     final session = await widget.clawbot.startQrLoginSession(
       baseUrl: widget.baseUrl,
+      loginTimeout: widget.loginTimeout,
     );
     if (!mounted) {
       session.dispose();
@@ -91,33 +120,56 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       switch (event) {
-        case QrReadyEvent():
-          setState(() => _state = _QrReady(event.qrContent));
+        case QrReadyEvent(qrContent: final content, generation: final gen):
+          _generation = gen;
+          setState(() {
+            _refreshNote = null;
+            _state = _QrReady(content);
+          });
         case QrScannedEvent():
           setState(() => _state = _Scanned());
-        case QrVerifyCodeRequiredEvent():
-          setState(() => _state = _VerifyCode(event.isRetry));
+        case QrRefreshedEvent(attempt: final n, maxAttempts: final max):
+          setState(() => _refreshNote = '正在刷新二维码…($n/$max)');
+        case QrExpiredEvent():
+          // Non-terminal: the flow refreshes automatically.
+          setState(() => _state = const _Refreshing('二维码已过期，正在刷新…'));
+        case QrVerifyCodeRequiredEvent(isRetry: final isRetry):
+          setState(() => _state = _VerifyCode(isRetry));
         case QrVerifyCodeBlockedEvent():
+          // Non-terminal: the flow refreshes automatically as well.
+          setState(() => _state = const _Refreshing('多次输入错误，正在刷新二维码…'));
+        case QrAlreadyConnectedEvent(wechatUserId: final userId):
+          // binded_redirect — a success in the official semantics.
           setState(() => _state = const _Terminal(
-                icon: Icons.block,
-                label: '配对码错误次数过多，请稍后重试',
+                icon: Icons.check_circle_outline,
+                label: '已连接过此 OpenClaw，无需重复连接。\n'
+                    '本机已保存该 bot 的凭据，可直接使用；'
+                    '如需换绑请扫描另一个 ClawBot 的二维码。',
+                color: Colors.green,
+                allowRetry: false,
+              ));
+          widget.onAlreadyConnected?.call(userId);
+        case QrTooManyQrResetsEvent(reason: final reason):
+          setState(() => _state = _Terminal(
+                icon: Icons.timer_off,
+                label: reason,
                 color: Colors.red,
                 allowRetry: true,
               ));
-        case QrAlreadyBoundEvent():
-          setState(() => _state = const _Terminal(
-                icon: Icons.link,
-                label: '该 ClawBot 已绑定过（凭据已在本机）。\n请先在应用内使用已保存账号，或解绑后重新扫码。',
-                color: Colors.orange,
-              ));
-        case QrConfirmedEvent():
-          setState(() => _state = _Confirmed(event.account));
-          widget.onLoggedIn?.call(event.account);
-        case QrExpiredEvent():
-          setState(() => _state = _Expired());
           widget.onExpired?.call();
-        case QrErrorEvent():
-          setState(() => _state = _Error(event.error.toString()));
+        case QrLoginTimeoutEvent():
+          setState(() => _state = const _Terminal(
+                icon: Icons.hourglass_empty,
+                label: '登录超时，请重试。',
+                color: Colors.red,
+                allowRetry: true,
+              ));
+          widget.onExpired?.call();
+        case QrConfirmedEvent(account: final account):
+          setState(() => _state = _Confirmed(account));
+          widget.onLoggedIn?.call(account);
+        case QrErrorEvent(error: final error):
+          setState(() => _state = _Error('$error'));
       }
     });
   }
@@ -161,11 +213,37 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
-              _QrImageDisplay(content: content, size: widget.qrSize),
+              // Keyed by generation so a refreshed code always re-renders.
+              _QrImageDisplay(
+                key: ValueKey('qr-$_generation'),
+                content: content,
+                size: widget.qrSize,
+              ),
               const SizedBox(height: 12),
               Text(
                 '打开微信 → 扫一扫',
                 style: theme.textTheme.bodySmall,
+              ),
+              if (_refreshNote != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _refreshNote!,
+                  style:
+                      TextStyle(fontSize: 11, color: Colors.blueGrey.shade400),
+                ),
+              ],
+            ],
+          ),
+        _Refreshing(label: final label) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _StatusTile(
+                  icon: Icons.refresh, label: label, color: Colors.blue),
+              const SizedBox(height: 12),
+              const SizedBox(
+                height: 28,
+                width: 28,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ],
           ),
@@ -202,21 +280,6 @@ class _QrLoginWidgetState extends State<QrLoginWidget> {
             label: '绑定成功！\nBot ID: ${account.botId}',
             color: Colors.green,
           ),
-        _Expired() => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const _StatusTile(
-                icon: Icons.timer_off,
-                label: '二维码已过期',
-                color: Colors.red,
-              ),
-              const SizedBox(height: 12),
-              FilledButton(
-                onPressed: _startLogin,
-                child: const Text('重新获取'),
-              ),
-            ],
-          ),
         _Error(message: final msg) => Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -252,6 +315,12 @@ final class _QrReady extends _UiState {
   _QrReady(this.qrContent);
 }
 
+/// 等待中且会自动恢复的非终止状态（二维码过期 / 配对码被封锁后会自动刷新）。
+final class _Refreshing extends _UiState {
+  final String label;
+  const _Refreshing(this.label);
+}
+
 final class _Scanned extends _UiState {
   _Scanned();
 }
@@ -261,8 +330,8 @@ final class _VerifyCode extends _UiState {
   _VerifyCode(this.isRetry);
 }
 
-/// Terminal outcome (verify-code blocked / already bound). Shows a retry
-/// button when [allowRetry] is set.
+/// Terminal outcome (refresh budget exhausted / login timeout / already
+/// connected). Shows a retry button when [allowRetry] is set.
 final class _Terminal extends _UiState {
   final IconData icon;
   final String label;
@@ -363,10 +432,6 @@ final class _Confirmed extends _UiState {
   _Confirmed(this.account);
 }
 
-final class _Expired extends _UiState {
-  _Expired();
-}
-
 final class _Error extends _UiState {
   final String message;
   _Error(this.message);
@@ -385,7 +450,11 @@ class _QrImageDisplay extends StatelessWidget {
   final String content;
   final double size;
 
-  const _QrImageDisplay({required this.content, required this.size});
+  const _QrImageDisplay({
+    required this.content,
+    required this.size,
+    super.key,
+  });
 
   /// Returns the raw PNG bytes if [content] is valid base64-encoded PNG/JPEG,
   /// otherwise returns null.
@@ -500,27 +569,52 @@ class _StatusTile extends StatelessWidget {
 
 /// Shows [QrLoginWidget] inside a Material dialog.
 ///
+/// Returns the newly bound account, or `null` when the user cancelled or the
+/// bot turned out to be already connected (`binded_redirect`). In the latter
+/// case [onAlreadyConnected] fires so the caller can fall back to the stored
+/// credentials.
+///
 /// ```dart
 /// await showQrLoginDialog(context: context, clawbot: clawbot);
+/// // 换绑入口可用不同标题提示用户这是"扫描另一个 bot"：
+/// await showQrLoginDialog(
+///   context: context,
+///   clawbot: clawbot,
+///   title: '换绑：扫码新的 ClawBot',
+/// );
 /// ```
 Future<ClawBotAccount?> showQrLoginDialog({
   required BuildContext context,
   required WeixinClawbot clawbot,
   String? baseUrl,
+  String title = '绑定微信 ClawBot',
+  void Function(String? wechatUserId)? onAlreadyConnected,
 }) {
   final completer = Completer<ClawBotAccount?>();
+
+  void closeWith(ClawBotAccount? account) {
+    if (!completer.isCompleted) completer.complete(account);
+  }
 
   showDialog<void>(
     context: context,
     barrierDismissible: false,
     builder: (ctx) => AlertDialog(
-      title: const Text('绑定微信 ClawBot'),
+      title: Text(title),
       content: QrLoginWidget(
         clawbot: clawbot,
         baseUrl: baseUrl,
         onLoggedIn: (account) {
           Navigator.of(ctx).pop();
-          if (!completer.isCompleted) completer.complete(account);
+          closeWith(account);
+        },
+        onAlreadyConnected: (userId) {
+          onAlreadyConnected?.call(userId);
+          // Give the user a moment to read the notice before closing.
+          Timer(const Duration(milliseconds: 900), () {
+            if (Navigator.of(ctx).mounted) Navigator.of(ctx).pop();
+            closeWith(null);
+          });
         },
         onExpired: () {
           // Widget shows a retry button; do not auto-close.
@@ -530,7 +624,7 @@ Future<ClawBotAccount?> showQrLoginDialog({
         TextButton(
           onPressed: () {
             Navigator.of(ctx).pop();
-            if (!completer.isCompleted) completer.complete(null);
+            closeWith(null);
           },
           child: const Text('取消'),
         ),
