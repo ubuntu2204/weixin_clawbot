@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-13
+
+### Added
+
+- **多账号宿主换绑支持**（服务端托管多个应用账号的场景，官方单账号模型未覆盖）：
+  - `WeixinClawbot.startQrLoginSession(omitLocalTokens: true)`（`startQrLogin` 同参）
+    —— 给 `get_bot_qrcode` 发**空**的 `local_token_list`。本地缓存的 bot token 属于另一个
+    应用账号时，把它交给服务端只会换来 `binded_redirect`（"这个 bot 已经连过"），
+    扫码后拿不到新凭据，换绑永远无法完成；不发该列表时服务端为扫码微信签发新 bot，
+    一次扫码即完成换绑。
+  - `QrAlreadyConnectedEvent` 携带宿主自救所需信息：`localBotTokens`（本地已知 bot token，
+    与是否发给服务端无关）、`localAccount`（命中的本地账号）、`rawStatus`、
+    `resolvedFromLocalStore`。服务端未回传 `ilink_user_id` 时，`wechatUserId` 会由本地
+    账号补全 —— 宿主可以据此在自己的绑定表里完成迁移，而不必再扫一次码。
+
 ## [0.5.0] - 2026-10-12
 
 本版把 API 面**逐项对齐官方** [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)

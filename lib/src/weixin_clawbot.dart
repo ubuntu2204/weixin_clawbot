@@ -211,16 +211,32 @@ class WeixinClawbot {
   ///   stored account of the same WeChat user is pruned — this is how a WeChat
   ///   user re-binds (换绑) to a new bot, mirroring the official
   ///   `clearStaleAccountsForUserId`.
+  ///
+  /// [omitLocalTokens] sends an **empty** `local_token_list`. Use it when this
+  /// client fronts *several* application users (a server-side multi-account
+  /// host): the stored tokens belong to a different user, so telling the
+  /// server about them only makes it answer `binded_redirect` — i.e. "this bot
+  /// is already connected to *that* other user", which is meaningless for the
+  /// account being bound now. Omitting the list lets the server issue a fresh
+  /// bot for the scanning WeChat user, so one scan completes a re-bind.
+  ///
+  /// When the server answers `binded_redirect` anyway, [QrAlreadyConnectedEvent]
+  /// carries [QrAlreadyConnectedEvent.localBotTokens] (and
+  /// [QrAlreadyConnectedEvent.localAccount]) so the host can still resolve the
+  /// WeChat user itself; [QrAlreadyConnectedEvent.wechatUserId] is completed
+  /// from the local store when the server did not echo `ilink_user_id`.
   Future<QrLoginSession> startQrLoginSession({
     String? baseUrl,
     Duration pollInterval = const Duration(seconds: 1),
     Duration loginTimeout = defaultLoginTimeout,
     int maxRefreshCount = maxQrRefreshCount,
+    bool omitLocalTokens = false,
   }) async {
     final client = _makeClient(baseUrl: baseUrl, token: '');
     // Locally-known bot tokens (max 10, newest first) so the server can
     // answer `binded_redirect` — identical to `getLocalBotTokenList()`.
-    final localTokenList = await _store.botTokenList();
+    final localTokenList =
+        omitLocalTokens ? const <String>[] : await _store.botTokenList();
     final flow = QrLoginFlow(
       client: client,
       pollInterval: pollInterval,
@@ -234,6 +250,15 @@ class WeixinClawbot {
 
     flow.startLogin().listen(
           (event) async {
+            if (event is QrAlreadyConnectedEvent) {
+              // `binded_redirect` carries no usable credentials. Give the host
+              // everything we know about the bot so it can re-bind on its own
+              // (its own binding table, not ours).
+              final enriched =
+                  await _enrichAlreadyConnected(event, localTokenList);
+              if (!controller.isClosed) controller.add(enriched);
+              return;
+            }
             // Emit the event FIRST so listeners (e.g. QrLoginWidget) receive
             // QrConfirmedEvent synchronously before the broadcast controller
             // is closed by onDone (which fires while the store save is awaited).
@@ -263,6 +288,56 @@ class WeixinClawbot {
     return QrLoginSession._(controller.stream, flow, client);
   }
 
+  /// Completes a `binded_redirect` event with everything a multi-account host
+  /// needs to re-bind on its own:
+  ///
+  /// * [QrAlreadyConnectedEvent.localBotTokens] — the tokens handed to the
+  ///   server (empty when the flow ran with `omitLocalTokens`);
+  /// * [QrAlreadyConnectedEvent.localAccount] — the stored account the redirect
+  ///   most likely refers to (matched by token, else the newest account);
+  /// * [QrAlreadyConnectedEvent.wechatUserId] — filled from that account when
+  ///   the server did not echo `ilink_user_id`.
+  Future<QrLoginEvent> _enrichAlreadyConnected(
+    QrAlreadyConnectedEvent event,
+    List<String> sentTokenList,
+  ) async {
+    final all = await _store.loadAll();
+    final newestFirst = [...all]
+      ..sort((a, b) => (b.savedAtMs ?? 0).compareTo(a.savedAtMs ?? 0));
+    // Everything this client knows about, regardless of what was sent — the
+    // host keeps its own binding table and may match on any of these.
+    final storeTokens = [
+      for (final a in newestFirst)
+        if (a.token.isNotEmpty) a.token,
+    ].take(AccountStore.maxLocalTokenList).toList();
+
+    ClawBotAccount? hit;
+    for (final token in sentTokenList) {
+      if (token.isEmpty) continue;
+      for (final a in newestFirst) {
+        if (a.token == token) {
+          hit = a;
+          break;
+        }
+      }
+      if (hit != null) break;
+    }
+    // No (or no matching) token list: fall back to the most recent account.
+    hit ??= newestFirst.isNotEmpty ? newestFirst.first : null;
+
+    final serverUserId = event.wechatUserId?.trim() ?? '';
+    final localUserId = hit?.defaultTo?.trim() ?? '';
+    final resolved = serverUserId.isNotEmpty ? serverUserId : localUserId;
+
+    return QrAlreadyConnectedEvent(
+      wechatUserId: resolved.isEmpty ? null : resolved,
+      rawStatus: event.rawStatus,
+      localAccount: hit,
+      localBotTokens: storeTokens,
+      resolvedFromLocalStore: serverUserId.isEmpty && localUserId.isNotEmpty,
+    );
+  }
+
   /// Returns a stream of [QrLoginEvent]s for the QR-code WeChat binding flow.
   ///
   /// Listen to the stream and display [QrReadyEvent.qrContent] as a QR image.
@@ -284,12 +359,14 @@ class WeixinClawbot {
     Duration pollInterval = const Duration(seconds: 1),
     Duration loginTimeout = defaultLoginTimeout,
     int maxRefreshCount = maxQrRefreshCount,
+    bool omitLocalTokens = false,
   }) async* {
     final session = await startQrLoginSession(
       baseUrl: baseUrl,
       pollInterval: pollInterval,
       loginTimeout: loginTimeout,
       maxRefreshCount: maxRefreshCount,
+      omitLocalTokens: omitLocalTokens,
     );
     yield* session.events;
   }

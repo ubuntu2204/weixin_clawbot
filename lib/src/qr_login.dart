@@ -114,11 +114,43 @@ final class QrLoginTimeoutEvent extends QrLoginEvent {
 /// [QrConfirmedEvent] makes [AccountStore] drop the previously stored accounts
 /// of the same WeChat user, mirroring the official
 /// `clearStaleAccountsForUserId`.
+///
+/// Multi-account hosts (one client serving several application users) can also
+/// resolve the WeChat user from the locally stored credentials — see
+/// [localAccount] / [localBotTokens] and
+/// [WeixinClawbot.startQrLoginSession]'s `omitLocalTokens`.
 final class QrAlreadyConnectedEvent extends QrLoginEvent {
   /// The scanning WeChat user's iLink user ID, when the server echoed it.
+  ///
+  /// May be completed from the local [AccountStore] when the server omitted it
+  /// — see [resolvedFromLocalStore].
   final String? wechatUserId;
 
-  QrAlreadyConnectedEvent({this.wechatUserId});
+  /// Raw status string as sent by the server (`binded_redirect`), for logging.
+  final String? rawStatus;
+
+  /// The locally stored account that the server's `binded_redirect` most
+  /// likely refers to, resolved by [WeixinClawbot]. `null` when nothing is
+  /// stored locally.
+  final ClawBotAccount? localAccount;
+
+  /// Bot tokens this client told the server about (`local_token_list`), or an
+  /// empty list when [WeixinClawbot.startQrLoginSession] was called with
+  /// `omitLocalTokens: true`. Hosts that keep their own binding table can use
+  /// these to look up which of their accounts owns the bot.
+  final List<String> localBotTokens;
+
+  /// `true` when [wechatUserId] was recovered from [localAccount] because the
+  /// server did not echo `ilink_user_id`.
+  final bool resolvedFromLocalStore;
+
+  QrAlreadyConnectedEvent({
+    this.wechatUserId,
+    this.rawStatus,
+    this.localAccount,
+    this.localBotTokens = const [],
+    this.resolvedFromLocalStore = false,
+  });
 }
 
 /// Login succeeded. The [account] object holds the bot credentials.
@@ -291,6 +323,7 @@ class QrLoginFlow {
             // and the stored ones stay valid. Terminal, and successful.
             sink.add(QrAlreadyConnectedEvent(
               wechatUserId: status.ilinkUserId,
+              rawStatus: status.rawStatus,
             ));
             return;
 

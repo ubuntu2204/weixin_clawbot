@@ -367,4 +367,105 @@ void main() {
       expect(events.whereType<QrLoginTimeoutEvent>(), hasLength(1));
     });
   });
+
+  group('WeixinClawbot re-bind helpers (multi-account hosts)', () {
+    /// In-memory [AccountStorage] so the tests never touch the real disk.
+    final storage = _MemoryAccountStorage();
+    late List<String> qrcodeBodies;
+
+    http.Client mockRebindClient(
+      Map<String, dynamic> statusResponse,
+    ) {
+      qrcodeBodies = <String>[];
+      return MockClient((req) async {
+        if (req.url.path.endsWith('get_bot_qrcode')) {
+          qrcodeBodies.add(req.body);
+          return http.Response(
+            jsonEncode({
+              'qrcode': 'QRC',
+              'qrcode_img_content': 'https://qr/1',
+            }),
+            200,
+          );
+        }
+        if (req.url.path.endsWith('get_qrcode_status')) {
+          return http.Response(jsonEncode(statusResponse), 200);
+        }
+        return http.Response('unexpected ${req.url}', 404);
+      });
+    }
+
+    test('omitLocalTokens sends an empty local_token_list', () async {
+      final store = AccountStore(storage: storage);
+      await store.save(ClawBotAccount(
+        id: 'B@old',
+        token: 'tok-old',
+        baseUrl: 'https://ilinkai.weixin.qq.com',
+        botId: 'B@old',
+        defaultTo: 'WX@old',
+        savedAtMs: 1,
+      ));
+
+      final bot = WeixinClawbot(
+        httpClient: mockRebindClient({'status': 'binded_redirect'}),
+        store: store,
+      );
+      final session =
+          await bot.startQrLoginSession(omitLocalTokens: true);
+      final events = await session.events
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      final body = jsonDecode(qrcodeBodies.single) as Map<String, dynamic>;
+      expect(body['local_token_list'], isEmpty,
+          reason: 'multi-account hosts must not advertise other users\' bots');
+
+      final connected = events.whereType<QrAlreadyConnectedEvent>().single;
+      // The server echoed nothing, so the WeChat user comes from the store.
+      expect(connected.wechatUserId, 'WX@old');
+      expect(connected.resolvedFromLocalStore, isTrue);
+      expect(connected.localBotTokens, contains('tok-old'),
+          reason: 'host needs the tokens to look up its own binding table');
+    });
+
+    test('server-echoed ilink_user_id wins over the local fallback', () async {
+      final store = AccountStore(storage: storage);
+      await store.save(ClawBotAccount(
+        id: 'B@old',
+        token: 'tok-old',
+        baseUrl: 'https://ilinkai.weixin.qq.com',
+        botId: 'B@old',
+        defaultTo: 'WX@old',
+        savedAtMs: 1,
+      ));
+
+      final bot = WeixinClawbot(
+        httpClient: mockRebindClient(
+            {'status': 'binded_redirect', 'ilink_user_id': 'WX@server'}),
+        store: store,
+      );
+      final session = await bot.startQrLoginSession();
+      final events = await session.events
+          .toList()
+          .timeout(const Duration(seconds: 5));
+
+      final body = jsonDecode(qrcodeBodies.single) as Map<String, dynamic>;
+      expect(body['local_token_list'], equals(['tok-old']));
+
+      final connected = events.whereType<QrAlreadyConnectedEvent>().single;
+      expect(connected.wechatUserId, 'WX@server');
+      expect(connected.resolvedFromLocalStore, isFalse);
+      expect(connected.localBotTokens, equals(['tok-old']));
+    });
+  });
+}
+
+class _MemoryAccountStorage implements AccountStorage {
+  List<String> _entries = const [];
+
+  @override
+  Future<List<String>> read() async => _entries;
+
+  @override
+  Future<void> write(List<String> entries) async => _entries = entries;
 }
