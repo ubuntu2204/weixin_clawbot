@@ -349,8 +349,14 @@ class _HomePageState extends State<HomePage> {
     setState(() => _sending = false);
 
     if (!result.ok) {
+      // 把 sendmessage 的协议错误（如 ret=-2 prepare failed）翻译成中文提示。
+      final friendly = describeWeixinError(result.error ?? '');
+      debugPrint('sendText 失败原始错误: ${result.error}');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: SelectableText('发送失败：${result.error}')),
+        SnackBar(
+          duration: const Duration(seconds: 6),
+          content: SelectableText('发送失败：$friendly'),
+        ),
       );
     } else {
       _controller.clear();

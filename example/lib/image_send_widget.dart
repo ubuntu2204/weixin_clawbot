@@ -42,6 +42,59 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:weixin_clawbot/weixin_clawbot.dart';
 
+/// 把 `weixin_clawbot` 返回的协议 / 英文错误翻译成可操作的中文提示。
+///
+/// 入参通常是 [SendResult.error]。示例的**文本发送**与**图片发送**都用它，保证两处
+/// 提示一致；未知错误原样返回，绝不吞掉诊断信息。
+///
+/// 最常见的一种：`sendmessage ret=-2 errmsg=prepare failed (rate limited, try
+/// again later)` —— 服务端还没为该会话就绪，往往是因为**微信用户近期没主动给这个
+/// bot 发过消息**（bot 无法凭空主动推送），叠加 `-2` 频率限制。
+String describeWeixinError(String raw) {
+  final e = raw.toLowerCase();
+
+  // ret=-2 + prepare failed：会话未就绪（微信用户没先说话），也可能叠加频率限制。
+  if (e.contains('prepare failed')) {
+    return '该微信用户近期没有给这个 ClawBot 发过消息，服务端会话还没就绪'
+        '（ret=-2，prepare failed）。\n'
+        'ClawBot 不能凭空主动推送——请让对方先在微信里给机器人发一条消息，系统会'
+        '自动记住这次会话，之后再发送即可。若对方刚发过仍失败，多半是同时触发了'
+        '频率限制（约 7 条 / 5 分钟），稍等 5–10 秒再重试。';
+  }
+
+  // 纯频率限制（ret=-2）。
+  if (e.contains('ret=-2') ||
+      e.contains('rate limited') ||
+      e.contains('try again later')) {
+    return '发送过于频繁，已触发服务端频率限制（每个 bot 约 7 条 / 5 分钟），'
+        '请稍等 5–10 秒后重试。';
+  }
+
+  // bot_token 失效（-14），账号按官方 session-guard 冷却一小时。
+  if (e.contains('ret=-14') ||
+      e.contains('stale bot token') ||
+      e.contains('session paused')) {
+    return '登录会话已过期（bot_token 失效，错误码 -14），该账号将冷却约一小时。'
+        '请重新扫码绑定后再发送。';
+  }
+
+  if (e.contains('no recipient')) {
+    return '缺少收件人：请填写收件人 ID，或让对方先发一条消息由系统自动获取。';
+  }
+
+  if (e.contains('no active connection') || e.contains('connect()')) {
+    return '尚未连接账号：请先扫码绑定并连接后再发送。';
+  }
+
+  // 出站媒体上传失败（Web 端多为 CORS 代理未启动）。
+  if (e.contains('x-encrypted-param') || e.contains('cdn upload')) {
+    return '图片 / 文件上传失败：Web 端请确认本地 CORS 代理已启动'
+        '（dart run bin/proxy_server.dart）后重试。';
+  }
+
+  return raw; // 未知错误原样展示，避免丢失信息
+}
+
 /// An image selected on the client, before (or after) it is uploaded.
 class PickedImage {
   /// The original, unencrypted picture bytes (JPEG / PNG / GIF / …). This is
@@ -129,6 +182,9 @@ class _ImageSendWidgetState extends State<ImageSendWidget> {
   PickedImage? _picked;
   bool _sending = false;
   String? _error;
+
+  /// 当 [_error] 是翻译后的中文提示时，这里保留服务端原始错误供排查（小字灰色）。
+  String? _errorRaw;
   final _captionController = TextEditingController();
 
   @override
@@ -155,7 +211,10 @@ class _ImageSendWidgetState extends State<ImageSendWidget> {
         dialogTitle: '选择要发送的图片',
       );
     } catch (e) {
-      setState(() => _error = '打开文件选择器失败：$e');
+      setState(() {
+        _error = '打开文件选择器失败：$e';
+        _errorRaw = null;
+      });
       return;
     }
     final file = result?.files.isNotEmpty == true ? result!.files.first : null;
@@ -163,12 +222,16 @@ class _ImageSendWidgetState extends State<ImageSendWidget> {
     final bytes = file.bytes;
     if (bytes == null || bytes.isEmpty) {
       // `path` is unavailable on web, so an unreadable file is a hard error.
-      setState(() => _error = '无法读取图片内容（${file.name}）');
+      setState(() {
+        _error = '无法读取图片内容（${file.name}）';
+        _errorRaw = null;
+      });
       return;
     }
     setState(() {
       _picked = PickedImage(bytes: bytes, fileName: file.name);
       _error = null;
+      _errorRaw = null;
     });
   }
 
@@ -180,6 +243,7 @@ class _ImageSendWidgetState extends State<ImageSendWidget> {
     setState(() {
       _sending = true;
       _error = null;
+      _errorRaw = null;
     });
 
     // All protocol work lives in the SDK — this widget just hands it the
@@ -195,7 +259,13 @@ class _ImageSendWidgetState extends State<ImageSendWidget> {
     setState(() => _sending = false);
 
     if (!result.ok) {
-      setState(() => _error = '发送失败：${result.error}');
+      // 把协议错误翻译成中文提示，同时保留原始信息供排查。
+      final raw = result.error ?? '未知错误';
+      final friendly = describeWeixinError(raw);
+      setState(() {
+        _error = '发送失败：$friendly';
+        _errorRaw = friendly == raw ? null : raw;
+      });
     } else {
       _captionController.clear();
     }
@@ -302,7 +372,19 @@ class _ImageSendWidgetState extends State<ImageSendWidget> {
           const SizedBox(height: 8),
           SelectableText(
             _error!,
-            style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+            style: TextStyle(
+                fontSize: 12, color: Colors.red.shade700, height: 1.4),
+          ),
+        ],
+        if (_errorRaw != null) ...[
+          const SizedBox(height: 4),
+          SelectableText(
+            '原始信息：$_errorRaw',
+            style: TextStyle(
+              fontSize: 10,
+              color: Colors.grey.shade600,
+              fontFamily: 'monospace',
+            ),
           ),
         ],
         const SizedBox(height: 12),

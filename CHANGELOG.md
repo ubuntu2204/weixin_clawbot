@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - example：新增**可整文件复制**的 `lib/image_send_widget.dart`（`ImageSendWidget` /
   `showImageSendDialog`），与 `qr_login_widget.dart` 同样设作供其他程序复用的组件；
   上传协议细节全部留在 SDK，示例与 Widget 均不含任何重复的上传实现。
+- example：**协议错误中文翻译**（`describeWeixinError`，`image_send_widget.dart`）——
+  文本与图片发送共用。`sendmessage ret=-2 errmsg=prepare failed (rate limited,
+  try again later)` 会被翻译成“该微信用户近期没先给 bot 发消息、会话未就绪，请
+  让对方先发一条消息，或稍等 5–10 秒重试”；同时覆盖 -2 频率限制、-14 会话冷却、
+  缺收件人、未连接、上传失败等情形；未知错误原样保留并展示原始信息供排查。
 
 > 核心 SDK 无行为变更（出站媒体 `sendImage`/`sendVideo`/`sendFile` 自 0.5.0 起已存在）；
 > 本次仅补齐 example 的发送图片入口与可复用 Widget，`file_picker` 仅为 example 依赖。
