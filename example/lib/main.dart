@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:weixin_clawbot/weixin_clawbot.dart';
+import 'image_send_widget.dart';
 import 'qr_login_widget.dart';
 
 /// Flutter Web 需要通过本地 CORS 代理访问 iLink API。
@@ -77,6 +78,11 @@ class _HomePageState extends State<HomePage> {
   final _toController = TextEditingController();
   bool _sending = false;
 
+  /// 本机刚发出的图片：`client_id` → 原图字节。
+  /// 服务端不会在长轮询里回显 bot 自己发出的媒体（与官方一致），这里用内存
+  /// 缓存做乐观回显，避免再走一次 CDN 下载。
+  final Map<String, Uint8List> _localImageBytes = {};
+
   /// 长轮询订阅（切换/解绑账号时取消）。
   StreamSubscription<WeixinMessage>? _sub;
 
@@ -131,6 +137,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _account = account;
       _messages.clear();
+      _localImageBytes.clear();
       _sessionPausedMinutes = null;
     });
     if (_toController.text.isEmpty && account.defaultTo != null) {
@@ -368,6 +375,78 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// 发送图片。
+  ///
+  /// 弹出可复用的 [ImageSendWidget] 对话框（选图 + 可选说明 → 内部调用官方对齐
+  /// 的 `clawbot.sendImage`），发送成功后本地乐观回显：
+  /// - 若填了说明，先插入一条机器人文本消息（SDK 也是把 caption 作为独立消息发出）；
+  /// - 再插入图片消息，原图字节缓存在 [_localImageBytes] 中直接渲染，不再走 CDN 下载。
+  Future<void> _sendImage() async {
+    final account = _account;
+    if (account == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先扫码绑定微信')),
+      );
+      return;
+    }
+    final to = _toController.text.trim().isEmpty
+        ? (account.defaultTo ?? '')
+        : _toController.text.trim();
+    if (to.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先填写收件人 ID')),
+      );
+      return;
+    }
+
+    final outcome = await showImageSendDialog(
+      context: context,
+      clawbot: _clawbot,
+      toUserId: to,
+      accountId: account.id,
+    );
+    if (outcome == null || !outcome.result.ok || !mounted) return;
+
+    // 与官方一致：字幕、图片各为一条独立消息，各自有 client_id。
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final bubbles = <WeixinMessage>[];
+    final caption = outcome.caption;
+    if (caption != null && caption.isNotEmpty) {
+      bubbles.add(WeixinMessage(
+        seq: 0,
+        fromUserId: account.botId,
+        toUserId: to,
+        clientId: 'caption-$now',
+        createTimeMs: now,
+        messageType: MessageType.bot.value,
+        messageState: MessageState.finish.value,
+        items: [MessageItem.text(caption)],
+      ));
+    }
+    final imageMsg = WeixinMessage(
+      seq: 0,
+      fromUserId: account.botId,
+      toUserId: to,
+      clientId: outcome.result.clientId.isEmpty
+          ? 'img-$now'
+          : outcome.result.clientId,
+      createTimeMs: now + 1,
+      messageType: MessageType.bot.value,
+      messageState: MessageState.finish.value,
+      // 不携带可用的 CDN 参数（isDownloadable=false）；回显直接读内存字节。
+      items: [
+        MessageItem.image(
+            encryptQueryParam: '',
+            aesKeyHex: '',
+            midSize: outcome.image.bytes.length)
+      ],
+    );
+    _localImageBytes[imageMsg.clientId] = outcome.image.bytes;
+    bubbles.add(imageMsg);
+
+    setState(() => _messages.addAll(bubbles));
+  }
+
   @override
   Widget build(BuildContext context) {
     final account = _account;
@@ -530,6 +609,7 @@ class _HomePageState extends State<HomePage> {
                   itemBuilder: (_, i) => _MessageBubble(
                     msg: _messages[i],
                     downloadImage: _clawbot.downloadImage,
+                    localImageBytes: _localImageBytes[_messages[i].clientId],
                   ),
                 ),
         ),
@@ -571,6 +651,12 @@ class _HomePageState extends State<HomePage> {
                       ),
                       onSubmitted: (_) => _send(),
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.outlined(
+                    onPressed: _sendImage,
+                    tooltip: '发送图片（选图 → sendImage 加密上传微信 CDN）',
+                    icon: const Icon(Icons.image_outlined),
                   ),
                   const SizedBox(width: 8),
                   _sending
@@ -626,7 +712,16 @@ class _MessageBubble extends StatelessWidget {
   /// `WeixinClawbot` instance).
   final Future<Uint8List> Function(ImageItemData) downloadImage;
 
-  const _MessageBubble({required this.msg, required this.downloadImage});
+  /// Raw bytes of an image this client just sent. When present the bubble
+  /// renders them directly instead of re-fetching from the CDN (the server
+  /// never echoes the bot's own media back over the long-poll).
+  final Uint8List? localImageBytes;
+
+  const _MessageBubble({
+    required this.msg,
+    required this.downloadImage,
+    this.localImageBytes,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -636,11 +731,13 @@ class _MessageBubble extends StatelessWidget {
         '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
 
     // Prefer the first image item; fall back to text (or a placeholder for
-    // other non-text types such as files/videos).
+    // other non-text types such as files/videos). An image is rendered from
+    // [localImageBytes] (just-sent) or by downloading the CDN item, so it does
+    // not need the "[非文本消息]" fallback.
     final image = msg.imageItem;
     final text = msg.textContent ??
         _nonTextPlaceholder(msg) ??
-        (msg.items.isNotEmpty ? '[非文本消息]' : '');
+        (image != null ? '' : (msg.items.isNotEmpty ? '[非文本消息]' : ''));
 
     return Align(
       alignment: isUser ? Alignment.centerLeft : Alignment.centerRight,
@@ -672,7 +769,12 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
             if (image != null)
-              _ImageMessageView(image: image, downloadImage: downloadImage),
+              localImageBytes != null
+                  ? _LocalImageView(bytes: localImageBytes!)
+                  : _ImageMessageView(
+                      image: image,
+                      downloadImage: downloadImage,
+                    ),
             if (text.isNotEmpty) ...[
               if (image != null) const SizedBox(height: 4),
               Text(text),
@@ -806,6 +908,27 @@ class _ImageMessageViewState extends State<_ImageMessageView> {
           ),
         );
       },
+    );
+  }
+}
+
+/// Renders a picture this client just sent, straight from the in-memory bytes
+/// cached in `_localImageBytes` (no CDN round-trip).
+class _LocalImageView extends StatelessWidget {
+  final Uint8List bytes;
+  const _LocalImageView({required this.bytes});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Image.memory(
+        bytes,
+        fit: BoxFit.contain,
+        width: 240,
+        errorBuilder: (_, __, ___) =>
+            const Text('[图片]（无法解码）', style: TextStyle(fontSize: 12)),
+      ),
     );
   }
 }

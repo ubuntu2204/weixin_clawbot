@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- example：**发送图片给微信**（Web / 原生通用）。聊天页底部新增 🖼 图标，点击弹出
+  选图对话框（`file_picker`，Web 走浏览器文件选择），确认后调用已有的
+  `WeixinClawbot.sendImage`（对齐官方 `sendImageMessageWeixin`：`getuploadurl` →
+  AES-128-ECB 上传微信 CDN → `sendmessage`）；成功后在本地乐观回显原图（服务端
+  不会在长轮询里回显 bot 自己的媒体，与官方一致）。
+- example：新增**可整文件复制**的 `lib/image_send_widget.dart`（`ImageSendWidget` /
+  `showImageSendDialog`），与 `qr_login_widget.dart` 同样设作供其他程序复用的组件；
+  上传协议细节全部留在 SDK，示例与 Widget 均不含任何重复的上传实现。
+
+> 核心 SDK 无行为变更（出站媒体 `sendImage`/`sendVideo`/`sendFile` 自 0.5.0 起已存在）；
+> 本次仅补齐 example 的发送图片入口与可复用 Widget，`file_picker` 仅为 example 依赖。
+
 ## [0.5.1] - 2026-10-13
 
 ### Added

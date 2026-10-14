@@ -14,6 +14,8 @@ dependencies:
     path: ../
   # lib/qr_login_widget.dart 渲染二维码用
   qr_flutter: ^4.1.0
+  # lib/image_send_widget.dart 选择本地/网络图片文件（Web + 原生通用）
+  file_picker: ^8.3.7
   # Used by bin/proxy_server.dart for Flutter Web CORS workaround
   shelf: ^1.4.0
   http: ^1.2.0

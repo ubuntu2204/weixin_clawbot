@@ -7,7 +7,7 @@
 一个 **单包双 SDK**（Dart + Flutter）package，通过微信扫码绑定 ClawBot（基于 OpenClaw iLink Bot API），并在应用中接收/发送微信消息。
 
 - **Dart 服务器 / CLI**：直接依赖，无需 Flutter SDK —— 适合后端自动收发消息、下载入站图片。
-- **Flutter 移动端 / 桌面端 / Web**：同一依赖；开箱即用的扫码绑定 Widget 见 `example/lib/qr_login_widget.dart`，可整文件复制到你的应用。
+- **Flutter 移动端 / 桌面端 / Web**：同一依赖；开箱即用的扫码绑定 Widget 见 `example/lib/qr_login_widget.dart`，发送图片 Widget 见 `example/lib/image_send_widget.dart`，均可整文件复制到你的应用。
 
 > **源码仓库**：https://github.com/ubuntu2204/weixin_clawbot
 > 协议实现参考腾讯官方插件 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)（详见文末"参考与致谢"）。
@@ -44,7 +44,7 @@
 
 ```yaml
 dependencies:
-  weixin_clawbot: ^0.5.0
+  weixin_clawbot: ^0.5.1
 ```
 
 ### 2. 前置要求
@@ -215,6 +215,11 @@ final result = await clawbot.sendImage(
 await clawbot.sendFile(bytes: pdfBytes, fileName: 'report.pdf', toUserId: to);
 await clawbot.sendVideo(bytes: mp4Bytes, toUserId: to);
 ```
+
+> example 的 Flutter Web 聊天页底部 🖼 图标即演示此流程：选图（`file_picker`，Web 走
+> 浏览器文件选择）→ `sendImage` 加密上传。整套 UI 封装在可复制的
+> `example/lib/image_send_widget.dart`（`showImageSendDialog` / `ImageSendWidget`），
+> 其他程序可直接复用——协议细节始终留在 SDK 内部，示例不含任何上传实现。
 
 ---
 

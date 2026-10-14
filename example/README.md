@@ -1,7 +1,7 @@
 # weixin_clawbot_example
 
 `weixin_clawbot` package 的完整示例应用，演示**扫码绑定、换绑、解绑**、多账号管理、
-接收/发送消息（含图片与“正在输入”状态）的全流程。
+接收/发送消息（含**发送图片**与“正在输入”状态）的全流程。
 
 ---
 
@@ -42,11 +42,17 @@ flutter run -d chrome --dart-define=PROXY_URL=http://localhost:3001
 ```
 example/
 ├── bin/
-│   └── proxy_server.dart   # 本地 CORS 反向代理（仅 Flutter Web 开发需要）
+│   └── proxy_server.dart    # 本地 CORS 反向代理（仅 Flutter Web 开发需要）
 └── lib/
-    ├── main.dart           # 示例 Flutter 应用（绑定/换绑/解绑/多账号/聊天）
-    └── qr_login_widget.dart # 可复制到你应用里的 QR 登录 Widget 与对话框
+    ├── main.dart            # 示例 Flutter 应用（绑定/换绑/解绑/多账号/聊天）
+    ├── qr_login_widget.dart # 可复制到你应用里的 QR 登录 Widget 与对话框
+    └── image_send_widget.dart # 可复制到你应用里的「发送图片」Widget 与对话框
 ```
+
+> `qr_login_widget.dart` 与 `image_send_widget.dart` 都是**自包含、可整文件复制**的组件：
+> 它们只依赖 `flutter` + 公开 SDK API，把微信 iLink 协议细节留在 package 内部
+> （官方 `sendImageMessageWeixin` 的 `getuploadurl` → CDN 加密上传 → `sendmessage`），
+> 其他程序直接调用即可，无需重复实现上传管线。
 
 ---
 
@@ -62,9 +68,49 @@ example/
 | 二维码自动刷新 | 自动 | 过期 / 配对码错乱时自动换新码（最多 3 个）并显示刷新进度 |
 | 接收消息 | 聊天页 | 长轮询实时接收，气泡左右区分用户/机器人；图片自动下载解密；引用/文件/视频/语音显示类型标签 |
 | 发送消息 | 聊天页底部 | 自动携带 `context_token`；收件人框默认填入绑定的微信用户 ID |
+| 发送图片 | 聊天页底部 🖼 图标 | 弹出可复制的 `image_send_widget.dart` 对话框：选图（`file_picker`，Web 走浏览器文件选择）+ 可选说明 → `clawbot.sendImage` 上传微信 CDN；成功后本地乐观回显原图 |
 | 输入状态 | 聊天页底部开关 | 开启后收到消息时 `getconfig` + `sendtyping` 显示“正在输入”，回复后自动取消 |
 | 会话过期横幅 | 自动 | 收到 `-14` 时按官方 `session-guard` 冷却一小时，页面提示剩余时间并要求重新扫码 |
 | 持久化重连 | 自动 | 应用重启后自动从本地存储恢复账号并重新建立连接 |
+
+---
+
+## 发送图片（供其他程序调用）
+
+出站图片的协议细节全部封装在 SDK 的 `WeixinClawbot.sendImage` 里（对齐官方
+`sendImageMessageWeixin`：明文 MD5 + 随机 16 字节密钥 → `getuploadurl`
+（`no_need_thumb`）→ AES-128-ECB + PKCS#7 密文上传微信 CDN → 读
+`x-encrypted-param` → 发一条 `image_item` 消息）。示例只是把选到的字节交给它：
+
+```dart
+// 选图（Web 端弹出浏览器文件选择，原生端弹系统选择器）
+final result = await FilePicker.platform.pickFiles(
+  type: FileType.image, withData: true,
+);
+final bytes = result!.files.first.bytes!;
+
+// 直接调用官方对齐的封装，任意程序都能复用
+final send = await clawbot.sendImage(
+  bytes: bytes,
+  toUserId: account.defaultTo!,
+  caption: '这是今日截图', // 可选，作为独立一条文本消息发出
+);
+if (!send.ok) debugPrint('发送失败：${send.error}');
+```
+
+想连 UI 一起复用，复制 `lib/image_send_widget.dart` 到你的应用，调用：
+
+```dart
+final outcome = await showImageSendDialog(
+  context: context, clawbot: clawbot, toUserId: account.defaultTo!,
+);
+// outcome.image.bytes 是原图，可用于本地乐观回显
+```
+
+> **Flutter Web**：出站上传与入站下载一样经本地 CORS 代理转发
+> （`/cdn/upload`，以及 `upload_full_url` 的 `/cdnfull` 路由）；代理已暴露
+> `x-encrypted-param`（`Access-Control-Expose-Headers`），否则会报
+> “missing x-encrypted-param header”。
 
 ---
 
