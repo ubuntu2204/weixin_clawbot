@@ -41,7 +41,7 @@ class MyApp extends StatelessWidget {
 final _clawbot = WeixinClawbot(
   proxyBaseUrl: kIsWeb ? _webProxyUrl : null,
   // 官方 base_info.bot_agent（仅用于服务端观测，不参与鉴权/路由）。
-  botAgent: 'WeixinClawbotExample/0.5.0',
+  botAgent: 'WeixinClawbotExample/0.5.2',
 );
 
 // ─────────────────────────────────────────────────────────────────────────────

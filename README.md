@@ -44,7 +44,7 @@
 
 ```yaml
 dependencies:
-  weixin_clawbot: ^0.5.1
+  weixin_clawbot: ^0.5.2
 ```
 
 ### 2. 前置要求
