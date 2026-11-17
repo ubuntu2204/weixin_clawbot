@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-11-17
+
+### Fixed
+
+- **服务器主动发图片客户端收不到**：出站媒体 item 与官方 `sendImageMessageWeixin`
+  （`src/messaging/send.ts`）不一致——`MessageItem.image/file/video` 构造的
+  `media` 缺少 `encrypt_type: 1`，且图片 item 多发了顶层 `aeskey`。微信客户端依赖
+  `encrypt_type` 判定媒体的解密/展示路径，缺失时按普通 fileid 处理导致图片不显示。
+  现三个 factory 均在 `media` 上设置 `encrypt_type: 1`，并移除出站顶层 `aeskey`
+  （该字段仅用于入站解析，仍保留在 `ImageItemData`）。新增端到端测试校验
+  `sendmessage` 请求体的 `image_item` 字段与官方一致。
+
 ## [0.5.2] - 2026-10-14
 
 ### Added

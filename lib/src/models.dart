@@ -794,9 +794,12 @@ class MessageItem {
 
   /// Builds an image item (`type: 2`) from an uploaded CDN reference.
   ///
-  /// Follows the official image sender: `aeskey` carries the raw 32-char hex
-  /// key, `media.aes_key` the base64 of that hex string, and `mid_size` the
-  /// ciphertext byte count.
+  /// Mirrors the official `sendImageMessageWeixin` (`src/messaging/send.ts`):
+  /// `media.encrypt_query_param` is the CDN download param, `media.aes_key`
+  /// is the base64 of the 32-char hex key string, `media.encrypt_type` is 1,
+  /// and `mid_size` is the ciphertext byte count. The official sender does
+  /// **not** emit a top-level `aeskey`; [aesKeyHex] is only used to derive
+  /// `media.aes_key`.
   factory MessageItem.image({
     required String encryptQueryParam,
     required String aesKeyHex,
@@ -808,8 +811,8 @@ class MessageItem {
           media: CdnMedia(
             encryptQueryParam: encryptQueryParam,
             aesKey: base64AesKeyFromHex(aesKeyHex),
+            encryptType: 1,
           ),
-          aesKeyHex: aesKeyHex,
           midSize: midSize,
         ),
       );
@@ -828,6 +831,7 @@ class MessageItem {
           media: CdnMedia(
             encryptQueryParam: encryptQueryParam,
             aesKey: base64AesKeyFromHex(aesKeyHex),
+            encryptType: 1,
           ),
           fileName: fileName,
           md5: md5,
@@ -848,6 +852,7 @@ class MessageItem {
           media: CdnMedia(
             encryptQueryParam: encryptQueryParam,
             aesKey: base64AesKeyFromHex(aesKeyHex),
+            encryptType: 1,
           ),
           videoSize: videoSize,
           videoMd5: videoMd5,

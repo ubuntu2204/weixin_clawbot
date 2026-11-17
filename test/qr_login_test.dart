@@ -410,11 +410,9 @@ void main() {
         httpClient: mockRebindClient({'status': 'binded_redirect'}),
         store: store,
       );
-      final session =
-          await bot.startQrLoginSession(omitLocalTokens: true);
-      final events = await session.events
-          .toList()
-          .timeout(const Duration(seconds: 5));
+      final session = await bot.startQrLoginSession(omitLocalTokens: true);
+      final events =
+          await session.events.toList().timeout(const Duration(seconds: 5));
 
       final body = jsonDecode(qrcodeBodies.single) as Map<String, dynamic>;
       expect(body['local_token_list'], isEmpty,
@@ -445,9 +443,8 @@ void main() {
         store: store,
       );
       final session = await bot.startQrLoginSession();
-      final events = await session.events
-          .toList()
-          .timeout(const Duration(seconds: 5));
+      final events =
+          await session.events.toList().timeout(const Duration(seconds: 5));
 
       final body = jsonDecode(qrcodeBodies.single) as Map<String, dynamic>;
       expect(body['local_token_list'], equals(['tok-old']));

@@ -808,6 +808,66 @@ void main() {
     });
   });
 
+  group('sendImage wire payload (official sendImageMessageWeixin)', () {
+    test('sendmessage body has encrypt_type=1 and no top-level aeskey',
+        () async {
+      Map<String, dynamic>? sentBody;
+      final client = MockClient((req) async {
+        final p = req.url.path;
+        if (p.endsWith('getuploadurl')) {
+          return http.Response(jsonEncode({'upload_param': 'up'}), 200);
+        }
+        if (p.endsWith('/upload')) {
+          return http.Response('', 200,
+              headers: {'x-encrypted-param': 'download-param'});
+        }
+        if (p.endsWith('sendmessage')) {
+          sentBody = jsonDecode(req.body) as Map<String, dynamic>;
+          return http.Response('{"ret":0}', 200);
+        }
+        if (p.endsWith('getupdates')) {
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+        }
+        return http.Response('{"ret":0}', 200);
+      });
+      final clawbot = WeixinClawbot(
+        store: AccountStore(storage: MemoryAccountStorage()),
+        httpClient: client,
+      );
+      addTearDown(() async {
+        await clawbot.disconnect('b@x', notify: false);
+        await clawbot.dispose();
+      });
+
+      clawbot.connect(account('b@x', 'T', 'wx@x', 1)).listen((_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      final plain = Uint8List.fromList(List.generate(30, (i) => i));
+      final result = await clawbot.sendImage(
+        bytes: plain,
+        toUserId: 'wx@x',
+        accountId: 'b@x',
+      );
+      expect(result.ok, isTrue, reason: result.error);
+      expect(sentBody, isNotNull);
+
+      final msg = sentBody!['msg'] as Map<String, dynamic>;
+      expect(msg['from_user_id'], '');
+      expect(msg['to_user_id'], 'wx@x');
+      final items = msg['item_list'] as List;
+      expect(items, hasLength(1));
+      final imageItem = (items.single as Map)['image_item'] as Map;
+      final media = imageItem['media'] as Map;
+      expect(media['encrypt_query_param'], 'download-param');
+      expect(media['encrypt_type'], 1,
+          reason: 'official image_item.media.encrypt_type is always 1');
+      expect(media['aes_key'], isNotNull);
+      expect(imageItem.containsKey('aeskey'), isFalse,
+          reason: 'official senders omit the top-level aeskey on outbound');
+      expect(imageItem['mid_size'], aesEcbPaddedSize(plain.length));
+    });
+  });
+
   group('outbound / inbound message models', () {
     test('media items use the official field spellings', () {
       const hex = '00112233445566778899aabbccddeeff';
@@ -818,11 +878,14 @@ void main() {
       ).toJson();
       expect(image['type'], MessageItemType.image.value);
       final imageItem = image['image_item'] as Map;
+      // Official sendImageMessageWeixin: media carries encrypt_type=1, and the
+      // outbound item has NO top-level aeskey (aeskey is an inbound field).
       expect(imageItem['media'], {
         'encrypt_query_param': 'dp',
         'aes_key': base64AesKeyFromHex(hex),
+        'encrypt_type': 1,
       });
-      expect(imageItem['aeskey'], hex);
+      expect(imageItem['aeskey'], isNull);
       expect(imageItem['mid_size'], 64);
 
       final file = MessageItem.file(
@@ -834,6 +897,7 @@ void main() {
       // Official file sender: len is the PLAINTEXT size as a decimal string.
       expect((file['file_item'] as Map)['len'], '12345');
       expect((file['file_item'] as Map)['file_name'], 'a.pdf');
+      expect(((file['file_item'] as Map)['media'] as Map)['encrypt_type'], 1);
 
       final video = MessageItem.video(
         encryptQueryParam: 'dp',
@@ -841,6 +905,7 @@ void main() {
         videoSize: 999,
       ).toJson();
       expect((video['video_item'] as Map)['video_size'], 999);
+      expect(((video['video_item'] as Map)['media'] as Map)['encrypt_type'], 1);
     });
 
     test('inbound tool-call and quoted items are parsed', () {

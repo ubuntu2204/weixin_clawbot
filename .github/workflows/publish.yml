@@ -1,0 +1,44 @@
+name: Publish to pub.dev
+
+# pub.dev Trusted Publishing (OIDC):
+# 1. On pub.dev, open the package -> Admin -> Trusted publishers, and add this
+#    repository (owner ubuntu2204, repo weixin_clawbot), workflow file
+#    `publish.yml`, with an empty environment.
+# 2. No PUB_CREDENTIALS secret is needed; the `id-token: write` permission lets
+#    `dart pub publish` authenticate to pub.dev directly via GitHub OIDC.
+#
+# Triggered by pushing a `v*` tag (e.g. v0.5.3) or manually from Actions tab.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required by pub.dev OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Verify format
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        run: dart analyze
+
+      - name: Test
+        run: dart test
+
+      # --force is required for non-interactive publishing from CI.
+      - name: Publish to pub.dev
+        run: dart pub publish --force

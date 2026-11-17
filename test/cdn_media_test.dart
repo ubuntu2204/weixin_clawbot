@@ -8,8 +8,7 @@ import 'package:weixin_clawbot/weixin_clawbot.dart';
 void main() {
   group('hexToBytes', () {
     test('decodes uppercase/lowercase hex', () {
-      expect(hexToBytes('0A1f2B3c'),
-          equals(const [0x0A, 0x1F, 0x2B, 0x3C]));
+      expect(hexToBytes('0A1f2B3c'), equals(const [0x0A, 0x1F, 0x2B, 0x3C]));
     });
 
     test('throws on odd length', () {
@@ -33,8 +32,7 @@ void main() {
 
     test('media.aes_key base64 of raw 16 bytes (image form)', () {
       const item = ImageItemData(
-        media: CdnMedia(
-            aesKey: 'AAECAwQFBgcICQoLDA0ODw=='), // base64(00..0f)
+        media: CdnMedia(aesKey: 'AAECAwQFBgcICQoLDA0ODw=='), // base64(00..0f)
       );
       expect(item.resolveAesKeyBytes(),
           equals(const [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
@@ -99,8 +97,7 @@ void main() {
       const item = ImageItemData(
         // 18 decoded bytes → unusable as an AES-128 key
         aesKeyHex: '000102030405060708090a0b0c0d0e0f1011',
-        media: CdnMedia(
-            aesKey: 'MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY='),
+        media: CdnMedia(aesKey: 'MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY='),
       );
       expect(item.resolveAesKeyBytes(), isNotNull);
     });
@@ -111,8 +108,16 @@ void main() {
       final msg = WeixinMessage.fromJson({
         'from_user_id': 'user@openim',
         'item_list': [
-          {'type': 1, 'text_item': {'text': '看这张图'}},
-          {'type': 2, 'image_item': {'media': {'encrypt_query_param': 'p'}}},
+          {
+            'type': 1,
+            'text_item': {'text': '看这张图'}
+          },
+          {
+            'type': 2,
+            'image_item': {
+              'media': {'encrypt_query_param': 'p'}
+            }
+          },
         ],
       });
       expect(msg.imageItem, isNotNull);
@@ -122,7 +127,10 @@ void main() {
     test('returns null for text-only message', () {
       final msg = WeixinMessage.fromJson({
         'item_list': [
-          {'type': 1, 'text_item': {'text': 'hi'}},
+          {
+            'type': 1,
+            'text_item': {'text': 'hi'}
+          },
         ],
       });
       expect(msg.imageItem, isNull);
@@ -157,19 +165,19 @@ void main() {
     test('stripPkcs7 returns null on malformed padding', () {
       expect(stripPkcs7(Uint8List.fromList([1, 2, 0])), isNull);
       expect(stripPkcs7(Uint8List.fromList([1, 2, 5, 5, 3])), isNull);
-      expect(stripPkcs7(Uint8List.fromList([1, 2, 2, 2])),
-          equals(const [1, 2]));
+      expect(
+          stripPkcs7(Uint8List.fromList([1, 2, 2, 2])), equals(const [1, 2]));
     });
   });
 
   group('CdnMediaDownloader', () {
-    test('builds download URL from encrypt_query_param and decrypts',
-        () async {
-      final key = Uint8List.fromList(
-          [0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, //
-           0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00]);
-      final plain = Uint8List.fromList(
-          List.generate(37, (i) => (i * 7 + 3) % 256));
+    test('builds download URL from encrypt_query_param and decrypts', () async {
+      final key = Uint8List.fromList([
+        0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, //
+        0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00
+      ]);
+      final plain =
+          Uint8List.fromList(List.generate(37, (i) => (i * 7 + 3) % 256));
       final cipher = aesEcbEncrypt(plain, key);
 
       Uri? requestedUrl;
@@ -254,7 +262,8 @@ void main() {
 
       await downloader.downloadMedia(const CdnMedia(
         encryptQueryParam: 'unused',
-        fullUrl: 'https://szextshort.weixin.qq.com/download?encrypted_query_param=q',
+        fullUrl:
+            'https://szextshort.weixin.qq.com/download?encrypted_query_param=q',
       ));
 
       expect(
