@@ -16,10 +16,10 @@ topics:
   - api
 
 environment:
+  # 纯 Dart 包（core 无 Flutter 依赖），供 Dart CLI / 服务器与 Flutter 项目共用。
+  # 不声明 flutter: —— pub.dev 据此显示 Dart SDK 徽章；若声明 flutter:，
+  # pub.dev 会只标记 Flutter，且 dart pub（CLI）解析时选不中本包。
   sdk: '>=3.4.0 <4.0.0'
-  # 仅声明 Flutter SDK 兼容（Flutter 项目可直接依赖本包）；不引入 flutter 依赖，
-  # 纯 Dart 服务器照常解析。pub.dev 因此显示 Dart + Flutter 双 SDK 徽章。
-  flutter: '>=3.19.0'
 
 dependencies:
   http: ^1.2.0

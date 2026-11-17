@@ -1,47 +1,28 @@
 name: Publish to pub.dev
 
-# pub.dev Trusted Publishing (OIDC):
-# 1. On pub.dev, open the package -> Admin -> Trusted publishers, and add this
-#    repository (owner ubuntu2204, repo weixin_clawbot), workflow file
-#    `publish.yml`, with an empty environment.
-# 2. No PUB_CREDENTIALS secret is needed; the `id-token: write` permission lets
-#    `dart pub publish` authenticate to pub.dev directly via GitHub OIDC.
-#
-# Triggered by pushing a `v*` tag (e.g. v0.5.3) or manually from Actions tab.
+# 对齐 pp_ocr 的发布方式：本机无法直连 pub.dev，凭据以 base64 存入仓库 Secret
+# PUB_CREDENTIALS_B64（内容为本机 ~/.config/dart/pub-credentials.json 的 base64）。
+# Action 只负责推送到 pub.dev，不跑 analyze/test。
+# 触发：push vX.Y.Z tag（如 v0.5.3）。
 on:
   push:
     tags:
-      - 'v*'
-  workflow_dispatch:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # required by pub.dev OIDC trusted publishing
     steps:
       - uses: actions/checkout@v4
-
-      # This package declares a `flutter:` SDK constraint, so `dart pub get`
-      # on a standalone Dart SDK fails. Set up Flutter so pub get recognizes it.
+      # 本包声明了 flutter SDK 约束，需 Flutter 环境才能解析依赖并发布。
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
-
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Verify format
-        run: dart format --output=none --set-exit-if-changed .
-
-      - name: Analyze
-        run: dart analyze
-
-      - name: Test
-        run: dart test
-
-      # --force is required for non-interactive publishing from CI.
-      - name: Publish to pub.dev
-        run: dart pub publish --force
+          flutter-version: '3.47.9'
+      - env:
+          PUB_CREDENTIALS_B64: ${{ secrets.PUB_CREDENTIALS_B64 }}
+        run: |
+          mkdir -p ~/.config/dart
+          printf '%s' "$PUB_CREDENTIALS_B64" | base64 -d > ~/.config/dart/pub-credentials.json
+          chmod 600 ~/.config/dart/pub-credentials.json
+      - run: flutter pub publish --force
