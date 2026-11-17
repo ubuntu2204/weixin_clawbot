@@ -23,12 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dart-lang/setup-dart@v1
+      # This package declares a `flutter:` SDK constraint, so `dart pub get`
+      # on a standalone Dart SDK fails. Set up Flutter so pub get recognizes it.
+      - uses: subosito/flutter-action@v2
         with:
-          sdk: stable
+          channel: stable
+          cache: true
 
       - name: Install dependencies
-        run: dart pub get
+        run: flutter pub get
 
       - name: Verify format
         run: dart format --output=none --set-exit-if-changed .
